@@ -55,7 +55,7 @@ function DragController({
     if (autoFrame) {
       const wantedY = Math.max(1.5, highestY * 0.58);
       desiredTarget.current.y += (wantedY - desiredTarget.current.y) * (1 - Math.exp(-2.2 * dt));
-      const wantedDistance = Math.min(42, 16 + Math.max(0, highestY - 3) * 1.25);
+      const wantedDistance = Math.min(48, 19 + Math.max(0, highestY - 3) * 1.45);
       desiredDistance.current += (wantedDistance - desiredDistance.current) * (1 - Math.exp(-1.8 * dt));
       if (orbit) {
         const offset = camera.position.clone().sub(orbit.target);
@@ -85,45 +85,12 @@ function DragController({
     if (!target) return;
     target.y = targetY;
 
-    // Intent-aware placement: gently magnetize toward a nearby block's top
-    // when the finger is close enough to indicate stacking, without hard snapping.
-    const heldData = blocks.current.find((b) => b.id === d.id);
-    const heldWidth = heldData ? shapeDef(heldData.kind).halfWidth : 0.5;
-    let placeTarget = target.clone();
-    let bestScore = Infinity;
-    blocks.current.forEach((other) => {
-      if (other.id === d.id) return;
-      const otherBody = bodies.get(other.id);
-      if (!otherBody) return;
-      const p = otherBody.translation();
-      const otherDef = shapeDef(other.kind);
-      const top = p.y + otherDef.halfHeight;
-      const dx = target.x - p.x;
-      const dz = target.z - p.z;
-      const distance = Math.hypot(dx, dz);
-      const radius = heldWidth + otherDef.halfWidth + 0.42;
-      const verticalIntent = Math.abs(targetY - (top + def.halfHeight)) < 1.15;
-      if (distance < radius && verticalIntent) {
-        const score = distance + Math.abs(targetY - (top + def.halfHeight)) * 0.55;
-        if (score < bestScore) {
-          bestScore = score;
-          const blend = 1 - THREE.MathUtils.smoothstep(distance, 0, radius);
-          placeTarget.x = THREE.MathUtils.lerp(target.x, p.x, blend * 0.72);
-          placeTarget.z = THREE.MathUtils.lerp(target.z, p.z, blend * 0.72);
-          placeTarget.y = THREE.MathUtils.lerp(targetY, top + def.halfHeight + 0.025, blend * 0.9);
-        }
-      }
-    });
-
     const cur = heldBody.translation();
-    // Acceleration-like follow: quick response at first, eased near the target.
-    const distance = cur.distanceTo(placeTarget);
-    const follow = THREE.MathUtils.clamp(DRAG_FOLLOW * (0.72 + distance * 0.12), 10, 23);
-    const k = 1 - Math.exp(-follow * dt);
+    const k = 1 - Math.exp(-DRAG_FOLLOW * dt);
     const next = new THREE.Vector3(
-      cur.x + (placeTarget.x - cur.x) * k,
-      cur.y + (placeTarget.y - cur.y) * k,
-      cur.z + (placeTarget.z - cur.z) * k,
+      cur.x + (target.x - cur.x) * k,
+      cur.y + (target.y - cur.y) * k,
+      cur.z + (target.z - cur.z) * k,
     );
     heldBody.setNextKinematicTranslation(next);
 
@@ -195,9 +162,7 @@ export default function Playroom() {
         v = b.p.clone().sub(a.p).divideScalar(dt);
         // throwing: flicks fly with a little arc
         const speed = v.length();
-        // A deliberate slow release settles neatly; a clear flick still throws.
-        if (speed < 3.2) v.multiplyScalar(0.28);
-        else v.y += Math.min(4, speed * 0.25);
+        if (speed > 2) v.y += Math.min(4, speed * 0.25);
         if (v.length() > THROW_MAX) v.setLength(THROW_MAX);
       }
       body.setLinvel(v, true);
@@ -316,7 +281,7 @@ export default function Playroom() {
       <Canvas
         shadows
         dpr={[1, 2]}
-        camera={{ position: [8, 8, 12], fov: 43 }}
+        camera={{ position: [9, 9, 14], fov: 45 }}
         onCreated={() => setTimeout(() => setReady(true), 300)}
         style={{ position: "absolute", inset: 0 }}
       >
@@ -351,9 +316,9 @@ export default function Playroom() {
         <DragController drag={drag} blocks={blocksRef} controls={controls} onFrame={() => {}} />
         <OrbitControls
           ref={controls}
-          target={[0, 1.25, 0]}
+          target={[0, 1.5, 0]}
           enablePan={false}
-          minDistance={4.5}
+          minDistance={5}
           maxDistance={48}
           maxPolarAngle={Math.PI / 2.15}
           mouseButtons={{ LEFT: undefined as any, MIDDLE: THREE.MOUSE.DOLLY, RIGHT: THREE.MOUSE.ROTATE }}
