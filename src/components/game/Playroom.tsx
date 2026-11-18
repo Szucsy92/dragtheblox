@@ -6,7 +6,7 @@ import { Physics } from "@react-three/rapier";
 import { Trash2, Sparkles, Smartphone, SmartphoneNfc } from "lucide-react";
 import {
   SHAPES, TOY_COLORS, shapeDef, type BlockData, type ShapeKind,
-  SPAWN_HEIGHT, DRAG_LIFT, DRAG_FOLLOW, THROW_MAX, SHAKE_THRESHOLD, SHAKE_IMPULSE,
+  SPAWN_HEIGHT, DRAG_FOLLOW, THROW_MAX, SHAKE_THRESHOLD, SHAKE_IMPULSE,
 } from "@/game/shapes";
 import { bodies } from "@/game/registry";
 import { sfx, unlockAudio } from "@/game/audio";
@@ -21,10 +21,11 @@ interface DragState {
   y: number;
   vel: THREE.Vector3;
   history: { t: number; p: THREE.Vector3 }[];
+  startY: number;
+  startPointerY: number;
 }
 
 const tmpV = new THREE.Vector3();
-const tmpN = new THREE.Vector3();
 const ndc = new THREE.Vector2();
 const ray = new THREE.Raycaster();
 const yawQ = new THREE.Quaternion();
@@ -32,50 +33,78 @@ const curQ = new THREE.Quaternion();
 const eul = new THREE.Euler();
 
 function DragController({
-  drag, blocks, onFrame,
-}: { drag: React.MutableRefObject<DragState | null>; blocks: React.MutableRefObject<BlockData[]>; onFrame: () => void }) {
-  const { camera, scene, gl } = useThree();
+  drag, blocks, controls, onFrame,
+}: { drag: React.MutableRefObject<DragState | null>; blocks: React.MutableRefObject<BlockData[]>; controls: React.MutableRefObject<any>; onFrame: () => void }) {
+  const { camera, gl } = useThree();
+  const plane = useRef(new THREE.Plane(new THREE.Vector3(0, 1, 0), 0));
+  const desiredTarget = useRef(new THREE.Vector3(0, 1.5, 0));
+  const desiredDistance = useRef(19);
+
   useFrame((_, delta) => {
     onFrame();
     const d = drag.current;
-    if (!d) return;
-    const body = bodies.get(d.id);
-    const data = blocks.current.find((b) => b.id === d.id);
-    if (!body || !data) return;
-    const def = shapeDef(data.kind);
     const dt = Math.min(delta, 0.05);
+    const orbit = controls.current;
+    const heldBody = d ? bodies.get(d.id) : null;
+    let highestY = 0;
+    bodies.forEach((body) => { highestY = Math.max(highestY, body.translation().y); });
+
+    // Only take over the camera while lifting or when a tall tower needs framing.
+    // Otherwise the player's normal pinch-to-zoom remains completely manual.
+    const autoFrame = Boolean(d);
+    if (autoFrame) {
+      const wantedY = Math.max(1.5, highestY * 0.58);
+      desiredTarget.current.y += (wantedY - desiredTarget.current.y) * (1 - Math.exp(-2.2 * dt));
+      const wantedDistance = Math.min(48, 19 + Math.max(0, highestY - 3) * 1.45);
+      desiredDistance.current += (wantedDistance - desiredDistance.current) * (1 - Math.exp(-1.8 * dt));
+      if (orbit) {
+        const offset = camera.position.clone().sub(orbit.target);
+        if (offset.lengthSq() > 0.001) {
+          offset.setLength(desiredDistance.current);
+          orbit.target.y += (desiredTarget.current.y - orbit.target.y) * (1 - Math.exp(-2.2 * dt));
+          camera.position.copy(orbit.target).add(offset);
+          orbit.update();
+        }
+      }
+    }
+
+    if (!d || !heldBody) return;
+    const data = blocks.current.find((b) => b.id === d.id);
+    if (!data) return;
+    const def = shapeDef(data.kind);
     const rect = gl.domElement.getBoundingClientRect();
     ndc.set(((d.x - rect.left) / rect.width) * 2 - 1, -((d.y - rect.top) / rect.height) * 2 + 1);
     ray.setFromCamera(ndc, camera);
-    const hits = ray.intersectObjects(scene.children, true);
-    const hit = hits.find(
-      (h) => (h.object.userData['surface'] || h.object.userData['blockId'] !== undefined) && h.object.userData['blockId'] !== d.id,
-    );
-    if (!hit) return;
-    const target = tmpV.copy(hit.point);
-    if (hit.face) tmpN.copy(hit.face.normal).transformDirection(hit.object.matrixWorld);
-    else tmpN.set(0, 1, 0);
-    if (tmpN.y > 0.5) target.y += def.halfHeight + DRAG_LIFT;
-    else {
-      target.addScaledVector(tmpN.setY(0).normalize(), def.halfWidth + 0.1);
-      target.y = Math.max(target.y, def.halfHeight + DRAG_LIFT);
-    }
-    target.y = Math.max(target.y, def.halfHeight + 0.05);
-    const cur = body.translation();
+
+    // Vertical finger travel lifts the toy; horizontal movement is projected
+    // onto a horizontal plane at that height instead of being clamped to floor level.
+    const lift = (d.startPointerY - d.y) * 0.018;
+    const targetY = Math.max(def.halfHeight + 0.06, d.startY + lift);
+    plane.current.constant = -targetY;
+    const target = ray.ray.intersectPlane(plane.current, tmpV);
+    if (!target) return;
+    target.y = targetY;
+
+    const cur = heldBody.translation();
     const k = 1 - Math.exp(-DRAG_FOLLOW * dt);
-    const next = new THREE.Vector3(cur.x + (target.x - cur.x) * k, cur.y + (target.y - cur.y) * k, cur.z + (target.z - cur.z) * k);
-    body.setNextKinematicTranslation(next);
-    // keep it upright, only yaw remains
-    const r = body.rotation();
+    const next = new THREE.Vector3(
+      cur.x + (target.x - cur.x) * k,
+      cur.y + (target.y - cur.y) * k,
+      cur.z + (target.z - cur.z) * k,
+    );
+    heldBody.setNextKinematicTranslation(next);
+
+    // Keep yaw but remove accidental tilt while positioning pieces.
+    const r = heldBody.rotation();
     curQ.set(r.x, r.y, r.z, r.w);
     eul.setFromQuaternion(curQ, "YXZ");
     yawQ.setFromEuler(eul.set(0, eul.y, 0, "YXZ"));
     curQ.slerp(yawQ, k);
-    body.setNextKinematicRotation(curQ);
-    // velocity history for throwing
+    heldBody.setNextKinematicRotation(curQ);
+
     const now = performance.now();
     d.history.push({ t: now, p: next.clone() });
-    while (d.history.length > 2 && now - d.history[0]!.t > 90) d.history.shift();
+    while (d.history.length > 2 && now - d.history[0]!.t > 120) d.history.shift();
   });
   return null;
 }
@@ -151,7 +180,7 @@ export default function Playroom() {
     if (!body) return;
     unlockAudio();
     body.setBodyType(2, true); // kinematic position
-    drag.current = { id, pointerId: e.pointerId, x: e.clientX, y: e.clientY, vel: new THREE.Vector3(), history: [] };
+    drag.current = { id, pointerId: e.pointerId, x: e.clientX, y: e.clientY, vel: new THREE.Vector3(), history: [], startY: body.translation().y, startPointerY: e.clientY };
     setActiveId(id);
     sfx.pick();
   }, []);
@@ -284,13 +313,13 @@ export default function Playroom() {
           </Physics>
         </Suspense>
         <ContactShadows position={[0, 0.02, 0]} opacity={0.35} scale={16} blur={2.5} far={4} />
-        <DragController drag={drag} blocks={blocksRef} onFrame={() => {}} />
+        <DragController drag={drag} blocks={blocksRef} controls={controls} onFrame={() => {}} />
         <OrbitControls
           ref={controls}
           target={[0, 1.5, 0]}
           enablePan={false}
           minDistance={5}
-          maxDistance={28}
+          maxDistance={48}
           maxPolarAngle={Math.PI / 2.15}
           mouseButtons={{ LEFT: undefined as any, MIDDLE: THREE.MOUSE.DOLLY, RIGHT: THREE.MOUSE.ROTATE }}
           touches={{ ONE: undefined as any, TWO: THREE.TOUCH.DOLLY_ROTATE }}
@@ -340,7 +369,7 @@ export default function Playroom() {
         <div className="pointer-events-none absolute inset-x-0 top-1/3 text-center font-display text-xl font-bold text-foreground/80 drop-shadow">
           Koppints egy elemre lent!
           <div className="mt-1 text-sm font-semibold text-foreground/60">
-            Egy ujj: húzás és dobás · Két ujj: forgatás, nagyítás
+            Egy ujj: emelés, építés és dobás · Két ujj: forgatás, nagyítás
           </div>
         </div>
       )}
