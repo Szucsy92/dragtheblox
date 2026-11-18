@@ -56,4 +56,4 @@ export const DRAG_FOLLOW = 16;
 export const THROW_MAX = 12;
 export const SHAKE_THRESHOLD = 9; // m/s² of user acceleration
 export const SHAKE_IMPULSE = 0.07;
-export const PLAY_AREA = 7; // half size of walled play area
+export const PLAY_AREA = 5.4; // radius of the compact circular play area

@@ -59,7 +59,7 @@ export function Room() {
   return (
     <>
       <mesh rotation-x={-Math.PI / 2} receiveShadow userData={{ surface: true }}>
-        <planeGeometry args={[60, 60]} />
+        <circleGeometry args={[W + 1.25, 96]} />
         <meshStandardMaterial map={floor} roughness={0.7} />
       </mesh>
       <mesh rotation-x={-Math.PI / 2} position-y={0.01} receiveShadow userData={{ surface: true }}>
@@ -68,11 +68,19 @@ export function Room() {
       </mesh>
       <RigidBody type="fixed" colliders={false} friction={1}>
         <CuboidCollider args={[30, 0.5, 30]} position={[0, -0.5, 0]} />
-        {/* invisible walls keep toys in the room when shaking */}
-        <CuboidCollider args={[W + 3, 20, 0.5]} position={[0, 20, -(W + 3)]} />
-        <CuboidCollider args={[W + 3, 20, 0.5]} position={[0, 20, W + 3]} />
-        <CuboidCollider args={[0.5, 20, W + 3]} position={[-(W + 3), 20, 0]} />
-        <CuboidCollider args={[0.5, 20, W + 3]} position={[W + 3, 20, 0]} />
+        {/* A smooth-enough circular boundary made from short tangential wall segments. */}
+        {Array.from({ length: 64 }, (_, i) => {
+          const a = (i / 64) * Math.PI * 2;
+          const r = W + 0.12;
+          return (
+            <CuboidCollider
+              key={i}
+              args={[0.34, 8, 0.16]}
+              position={[Math.cos(a) * r, 8, Math.sin(a) * r]}
+              rotation={[0, -a + Math.PI / 2, 0]}
+            />
+          );
+        })}
       </RigidBody>
     </>
   );
