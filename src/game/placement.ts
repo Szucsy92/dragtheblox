@@ -2,7 +2,7 @@
 // everything is plain numbers so it can be unit-tested.
 import {
   BLOCK_SCALE, DRAG_LIFT, HOVER_GAP, PLAY_AREA, RUG_H, SNAP_RANGE, SNAP_STEP,
-  SPAWN_HEIGHT, SUPPORT_OVERLAP, TILT_OK, halfExtents, shapeDef, type ShapeKind,
+  SPAWN_HEIGHT, SUPPORT_KEEP, SUPPORT_OVERLAP, TILT_OK, halfExtents, shapeDef, type ShapeKind,
 } from "./shapes";
 
 export const HALF_PI = Math.PI / 2;
@@ -44,6 +44,8 @@ export interface CarryInput {
   yaw: number;
   /** Current centre height of the carried block. */
   heldY: number;
+  /** Support chosen on the previous frame: it is kept with less overlap (hysteresis, no flicker at the edge). */
+  stickyId: number | null;
   others: Other[];
 }
 
@@ -64,7 +66,7 @@ export interface CarryResult {
  * turned to match that block, and pulled onto a half-cube grid when it is on a flat top.
  */
 export function computeCarry(input: CarryInput): CarryResult {
-  const { kind, x, z, heldY, others } = input;
+  const { kind, x, z, heldY, others, stickyId } = input;
   const [hx, hy, hz] = halfExtents(kind);
   const yawPref = input.yaw;
 
@@ -101,19 +103,27 @@ export function computeCarry(input: CarryInput): CarryResult {
       if (ovX <= 0 || ovZ <= 0) continue;
       frac = (ovX * ovZ) / (4 * wfx * wfz);
     }
-    if (frac < SUPPORT_OVERLAP) continue;
+    if (frac < (o.id === stickyId ? SUPPORT_KEEP : SUPPORT_OVERLAP)) continue;
     if (!best || top > best.top + 0.02 || (Math.abs(top - best.top) <= 0.02 && frac > best.frac)) {
       best = { o, top, frac, flat };
     }
   }
 
   if (!best) {
-    return { x, z, y: RUG_H + hy + DRAG_LIFT, yaw: gy, top: RUG_H, supportId: null, snapped: false };
+    const r: CarryResult = { x, z, y: RUG_H + hy + DRAG_LIFT, yaw: gy, top: RUG_H, supportId: null, snapped: false };
+    return separate(r, kind, heldY, others);
   }
 
   const y = best.top + hy + HOVER_GAP;
   if (!best.flat) {
-    return { x, z, y, yaw: gy, top: best.top, supportId: best.o.id, snapped: false };
+    return separate({ x, z, y, yaw: gy, top: best.top, supportId: best.o.id, snapped: false }, kind, heldY, others);
+  }
+
+  // Not yet above the top: rise first. No magnet yet; the finger position decides which side it waits on.
+  const oyaw0 = quatYaw(best.o.q);
+  if (heldY - hy < best.top - 0.01) {
+    const yaw0 = oyaw0 + Math.round((yawPref - oyaw0) / HALF_PI) * HALF_PI;
+    return separate({ x, z, y, yaw: yaw0, top: best.top, supportId: best.o.id, snapped: false }, kind, heldY, others);
   }
 
   // Flat top: copy the support's orientation and pull onto its half-cube grid.
@@ -128,11 +138,40 @@ export function computeCarry(input: CarryInput): CarryResult {
   const snapX = Math.abs(lx - gx) < range, snapZ = Math.abs(lz - gz) < range;
   if (snapX) lx = gx;
   if (snapZ) lz = gz;
-  return {
+  return separate({
     x: o.x + c * lx + s * lz,
     z: o.z - s * lx + c * lz,
     y, yaw, top: best.top, supportId: o.id, snapped: snapX && snapZ,
-  };
+  }, kind, heldY, others);
+}
+
+/**
+ * The carried block must never overlap another block sideways (the physics would shove it away, or it would
+ * pop out on release). Any block that is level with the carried one is an obstacle: the target is pushed out
+ * of it. This also gives the "rise first, then slide on top" order: while the carried block's bottom is still
+ * below a support's top, that support is an obstacle too.
+ */
+function separate(r: CarryResult, kind: ShapeKind, heldY: number, others: Other[]): CarryResult {
+  const [hx, hy, hz] = halfExtents(kind);
+  const c = Math.abs(Math.cos(r.yaw)), s = Math.abs(Math.sin(r.yaw));
+  const fx = c * hx + s * hz, fz = s * hx + c * hz;
+  const lo = Math.min(heldY, r.y) - hy, hi = Math.max(heldY, r.y) + hy;
+  let px = r.x, pz = r.z, moved = false;
+  for (let pass = 0; pass < 4; pass++) {
+    let any = false;
+    for (const o of others) {
+      const [ax, ay, az] = worldHalf(o.kind, o.q);
+      if (o.y - ay >= heldY) continue; // resting on / above the carried block
+      if (o.y + ay <= lo + 0.02 || o.y - ay >= hi) continue; // not level with it
+      const ox = fx + ax - Math.abs(px - o.x), oz = fz + az - Math.abs(pz - o.z);
+      if (ox <= 0 || oz <= 0) continue;
+      if (ox < oz) px += (px >= o.x ? 1 : -1) * (ox + 0.02);
+      else pz += (pz >= o.z ? 1 : -1) * (oz + 0.02);
+      any = moved = true;
+    }
+    if (!any) break;
+  }
+  return moved ? { ...r, x: px, z: pz, snapped: false } : r;
 }
 
 /** A free spot to drop a new block: away from the others, never on top of a tower if avoidable. */

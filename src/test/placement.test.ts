@@ -8,14 +8,14 @@ const cubeAt = (n: number, x: number, y: number, z: number, q = id): Other => ({
 
 describe("computeCarry", () => {
   it("floats a block just above the rug, never inside it", () => {
-    const r = computeCarry({ kind: "cube", x: 1, z: 1, yaw: 0, heldY: 1, others: [] });
+    const r = computeCarry({ kind: "cube", x: 1, z: 1, yaw: 0, heldY: 1, stickyId: null, others: [] });
     expect(r.y).toBeCloseTo(RUG_H + 0.5 * S + DRAG_LIFT);
     expect(r.top).toBe(RUG_H);
   });
 
   it("hovers above a cube instead of entering it, and magnet-centres", () => {
     const base = cubeAt(1, 0, RUG_H + 0.5 * S, 0);
-    const r = computeCarry({ kind: "cube", x: 0.1, z: -0.08, yaw: 0, heldY: 2, others: [base] });
+    const r = computeCarry({ kind: "cube", x: 0.1, z: -0.08, yaw: 0, heldY: RUG_H + S + 0.5 * S + HOVER_GAP, stickyId: null, others: [base] });
     expect(r.supportId).toBe(1);
     expect(r.y).toBeCloseTo(RUG_H + S + 0.5 * S + HOVER_GAP);
     expect(r.snapped).toBe(true);
@@ -25,30 +25,57 @@ describe("computeCarry", () => {
 
   it("ignores a block resting on top of the carried one", () => {
     const above = cubeAt(2, 0, RUG_H + 1.5 * S, 0);
-    const r = computeCarry({ kind: "cube", x: 0, z: 0, yaw: 0, heldY: RUG_H + 0.5 * S, others: [above] });
+    const r = computeCarry({ kind: "cube", x: 0, z: 0, yaw: 0, heldY: RUG_H + 0.5 * S, stickyId: null, others: [above] });
     expect(r.supportId).toBeNull();
   });
 
   it("uses the tallest support and aligns yaw to it (mod 90°)", () => {
     const low = cubeAt(1, 0, RUG_H + 0.5 * S, 0);
     const tall = cubeAt(2, 0.2, RUG_H + 1.5 * S, 0, yawQ(0.3));
-    const r = computeCarry({ kind: "cube", x: 0.1, z: 0, yaw: 0, heldY: 6, others: [low, tall] });
+    const r = computeCarry({ kind: "cube", x: 0.1, z: 0, yaw: 0, heldY: 6, stickyId: null, others: [low, tall] });
     expect(r.supportId).toBe(2);
     expect(Math.abs(r.yaw - quatYaw(tall.q)) % HALF_PI).toBeLessThan(1e-6);
   });
 
   it("does not lift for a barely touching block", () => {
     const base = cubeAt(1, 0, RUG_H + 0.5 * S, 0);
-    const r = computeCarry({ kind: "cube", x: 0.95 * S, z: 0, yaw: 0, heldY: 1, others: [base] });
+    const r = computeCarry({ kind: "cube", x: 0.95 * S, z: 0, yaw: 0, heldY: 1, stickyId: null, others: [base] });
     expect(r.supportId).toBeNull();
   });
 
   it("hovers above a tipped-over block using its real height, without snapping", () => {
     // brick lying on its end: 2*S tall
     const tilted: Other = { id: 3, kind: "brick", x: 0, y: RUG_H + S, z: 0, q: { x: 0, y: 0, z: Math.SQRT1_2, w: Math.SQRT1_2 } };
-    const r = computeCarry({ kind: "cube", x: 0, z: 0, yaw: 0, heldY: 4, others: [tilted] });
+    const r = computeCarry({ kind: "cube", x: 0, z: 0, yaw: 0, heldY: 4, stickyId: null, others: [tilted] });
     expect(r.snapped).toBe(false);
     expect(r.top).toBeCloseTo(RUG_H + 2 * S);
+  });
+});
+
+describe("climbing and sideways collisions", () => {
+  const base = cubeAt(1, 0, RUG_H + 0.5 * S, 0);
+  it("rises first: while its bottom is below the support top it stays beside it, not inside", () => {
+    const low = RUG_H + 0.5 * S + DRAG_LIFT;
+    const r = computeCarry({ kind: "cube", x: 0.3, z: 0, yaw: 0, heldY: low, stickyId: null, others: [base] });
+    expect(r.supportId).toBe(1);
+    expect(r.y).toBeGreaterThan(RUG_H + S);
+    expect(Math.abs(r.x)).toBeGreaterThanOrEqual(S - 1e-6); // pushed out to the side
+  });
+  it("slides on top once it has cleared the support", () => {
+    const high = RUG_H + S + 0.5 * S + HOVER_GAP;
+    const r = computeCarry({ kind: "cube", x: 0.3, z: 0, yaw: 0, heldY: high, stickyId: null, others: [base] });
+    expect(Math.abs(r.x)).toBeLessThan(0.7 * S);
+  });
+  it("does not overlap a neighbour on the floor (no shoving, no pop on release)", () => {
+    const r = computeCarry({ kind: "cube", x: 0.8 * S, z: 0, yaw: 0, heldY: RUG_H + 0.5 * S + DRAG_LIFT, stickyId: null, others: [base] });
+    expect(Math.abs(r.x)).toBeGreaterThanOrEqual(S - 1e-6);
+  });
+  it("keeps the support with less overlap once chosen (hysteresis)", () => {
+    const x = 0.5 * S + 0.38 * S; // ~12% overlap
+    const fresh = computeCarry({ kind: "cube", x, z: 0, yaw: 0, heldY: 4, stickyId: null, others: [base] });
+    const kept = computeCarry({ kind: "cube", x, z: 0, yaw: 0, heldY: 4, stickyId: 1, others: [base] });
+    expect(fresh.supportId).toBeNull();
+    expect(kept.supportId).toBe(1);
   });
 });
 

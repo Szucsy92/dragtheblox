@@ -25,6 +25,10 @@ interface DragState {
   offX: number;
   offZ: number;
   started: boolean;
+  /** Height of the plane the finger ray is intersected with: the carried block's TARGET height, so it cannot drift while climbing. */
+  planeY: number;
+  /** Support under the carried block on the previous frame (hysteresis). */
+  sticky: number | null;
   /** Preferred yaw; the player turns it with the rotate button. */
   yaw: number;
 }
@@ -68,13 +72,16 @@ function DragController({ drag }: { drag: React.MutableRefObject<DragState | nul
     const bb = gl.domElement.getBoundingClientRect();
     ndc.set(((d.x - bb.left) / bb.width) * 2 - 1, -((d.y - bb.top) / bb.height) * 2 + 1);
     ray.setFromCamera(ndc, camera);
-    // The finger ray is intersected at the block's own height, so the block stays under the finger while it climbs.
-    plane.constant = -t.y;
+    // Intersect at the height the block is heading to (not where it is now): otherwise the hit point slides
+    // toward the camera while the block climbs, it leaves the tower top, drops, and flickers.
+    if (!d.started) d.planeY = t.y;
+    plane.constant = -d.planeY;
     const hit = ray.ray.intersectPlane(plane, tmpV);
     if (!hit) return hide();
 
     if (!d.started) {
       d.started = true;
+      d.planeY = t.y;
       const [hx, , hz] = halfExtents(kind);
       let ox = t.x - hit.x, oz = t.z - hit.z;
       const m = Math.hypot(ox, oz), max = Math.max(hx, hz);
@@ -87,8 +94,10 @@ function DragController({ drag }: { drag: React.MutableRefObject<DragState | nul
     }
 
     const res = computeCarry({
-      kind, x: hit.x + d.offX, z: hit.z + d.offZ, yaw: d.yaw, heldY: t.y, others: snapshot(d.id),
+      kind, x: hit.x + d.offX, z: hit.z + d.offZ, yaw: d.yaw, heldY: t.y, stickyId: d.sticky, others: snapshot(d.id),
     });
+    d.planeY = res.y;
+    d.sticky = res.supportId;
 
     // Position: steer by velocity (clamped), never teleport.
     let vx = (res.x - t.x) * CARRY_GAIN, vy = (res.y - t.y) * CARRY_GAIN, vz = (res.z - t.z) * CARRY_GAIN;
@@ -228,7 +237,7 @@ export default function Playroom() {
     setNotice("");
     unlockAudio();
     body.setGravityScale(0, true); // carried: stays dynamic (collides properly), just floats
-    drag.current = { id, pointerId: e.pointerId, x: e.clientX, y: e.clientY, offX: 0, offZ: 0, started: false, yaw: 0 };
+    drag.current = { id, pointerId: e.pointerId, x: e.clientX, y: e.clientY, offX: 0, offZ: 0, started: false, planeY: 0, sticky: null, yaw: 0 };
     setActiveId(id);
     sfx.pick();
   }, []);

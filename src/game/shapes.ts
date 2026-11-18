@@ -85,6 +85,8 @@ export const SHAKE_IMPULSE = 0.045 * SIZE_RATIO;
 // ---- Smart building ----
 /** Fraction of the carried block's footprint that must be over another block to count as "on top of it". */
 export const SUPPORT_OVERLAP = 0.22;
+/** Once on a support, it is kept down to this overlap so the block does not flicker at the edge. */
+export const SUPPORT_KEEP = 0.08;
 /** Support up-vector must be at least this vertical (cos ≈ 16°) to count as a level surface. */
 export const TILT_OK = 0.96;
 /** Magnet grid on a flat top, in block units (0.5 = half a cube). */
