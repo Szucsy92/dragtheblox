@@ -9,8 +9,8 @@ import {
   GRAVITY, CARRY_GAIN, CARRY_MAX, ROT_GAIN, ROT_MAX, THROW_MIN, THROW_MAX,
   SHAKE_THRESHOLD, SHAKE_IMPULSE, RUG_H,
 } from "@/game/shapes";
-import { computeCarry, pickSpawn, HALF_PI } from "@/game/placement";
-import { bodies, kinds, snapshot } from "@/game/registry";
+import { computeCarry, overlapsOther, pickSpawn, HALF_PI } from "@/game/placement";
+import { bodies, kinds, snapshot, setCarried } from "@/game/registry";
 import { sfx, unlockAudio } from "@/game/audio";
 import { Block } from "./Block";
 import { Room } from "./Room";
@@ -25,6 +25,8 @@ interface DragState {
   offX: number;
   offZ: number;
   started: boolean;
+  /** Last computed target pose (used to place the block cleanly on release). */
+  last: { x: number; y: number; z: number; yaw: number } | null;
   /** Height of the plane the finger ray is intersected with: the carried block's TARGET height, so it cannot drift while climbing. */
   planeY: number;
   /** Support under the carried block on the previous frame (hysteresis). */
@@ -97,6 +99,7 @@ function DragController({ drag }: { drag: React.MutableRefObject<DragState | nul
       kind, x: hit.x + d.offX, z: hit.z + d.offZ, yaw: d.yaw, heldY: t.y, stickyId: d.sticky, others: snapshot(d.id),
     });
     d.planeY = res.y;
+    d.last = { x: res.x, y: res.y, z: res.z, yaw: res.yaw };
     d.sticky = res.supportId;
 
     // Position: steer by velocity (clamped), never teleport.
@@ -193,7 +196,14 @@ export default function Playroom() {
       return;
     }
     if (body) {
-      body.setGravityScale(1, true);
+      setCarried(body, false);
+      // The carried block does not collide with others, so if it is still on its way (overlapping something)
+      // put it on its computed spot first: no pop-out when the physics wakes up.
+      const k = kinds.get(d.id);
+      const t0 = body.translation();
+      if (k && d.last && overlapsOther(k, t0.x, t0.y, t0.z, d.last.yaw, snapshot(d.id))) {
+        body.setTranslation({ x: d.last.x, y: d.last.y, z: d.last.z }, true);
+      }
       const lv = body.linvel();
       const speed = Math.hypot(lv.x, lv.z);
       if (speed > THROW_MIN) {
@@ -236,8 +246,8 @@ export default function Playroom() {
     if (!body) return;
     setNotice("");
     unlockAudio();
-    body.setGravityScale(0, true); // carried: stays dynamic (collides properly), just floats
-    drag.current = { id, pointerId: e.pointerId, x: e.clientX, y: e.clientY, offX: 0, offZ: 0, started: false, planeY: 0, sticky: null, yaw: 0 };
+    setCarried(body, true); // carried: dynamic, floats, collides only with the ground
+    drag.current = { id, pointerId: e.pointerId, x: e.clientX, y: e.clientY, offX: 0, offZ: 0, started: false, last: null, planeY: 0, sticky: null, yaw: 0 };
     setActiveId(id);
     sfx.pick();
   }, []);
@@ -253,7 +263,7 @@ export default function Playroom() {
         const body = bodies.get(active.id);
         drag.current = null;
         if (body) {
-          body.setGravityScale(1, true);
+          setCarried(body, false);
           body.setLinvel({ x: 0, y: 0, z: 0 }, true);
           body.setAngvel({ x: 0, y: 0, z: 0 }, true);
         }
@@ -348,7 +358,7 @@ export default function Playroom() {
   const nextColor = TOY_COLORS[colorIdx % TOY_COLORS.length]!;
 
   return (
-    <div className="fixed inset-0 select-none overflow-hidden bg-background touch-none" data-scene-ready={ready ? "" : undefined}>
+    <div className="fixed inset-0 select-none overflow-hidden bg-[#0e1222] touch-none" data-scene-ready={ready ? "" : undefined}>
       <Canvas
         shadows
         dpr={[1, 2]}
@@ -356,9 +366,9 @@ export default function Playroom() {
         onCreated={() => setTimeout(() => setReady(true), 300)}
         style={{ position: "absolute", inset: 0 }}
       >
-        <color attach="background" args={["#bfe6ff"]} />
-        <fog attach="fog" args={["#bfe6ff", 25, 55]} />
-        <hemisphereLight args={["#fff6e5", "#c98b4f", 0.6]} />
+        <color attach="background" args={["#0e1222"]} />
+        <fog attach="fog" args={["#0e1222", 22, 50]} />
+        <hemisphereLight args={["#cfd8ff", "#3a2f4a", 0.7]} />
         <directionalLight
           position={[6, 12, 5]}
           intensity={1.8}
@@ -383,7 +393,7 @@ export default function Playroom() {
             ))}
           </Physics>
         </Suspense>
-        <ContactShadows position={[0, RUG_H + 0.004, 0]} opacity={0.35} scale={16} blur={2.5} far={4} />
+        <ContactShadows position={[0, RUG_H + 0.004, 0]} opacity={0.55} scale={16} blur={2.5} far={4} />
         <DragController drag={drag} />
         <OrbitControls
           ref={controls}
@@ -462,9 +472,9 @@ export default function Playroom() {
 
       {/* Hint */}
       {blocks.length === 0 && (
-        <div className="pointer-events-none absolute inset-x-0 top-1/3 text-center font-display text-xl font-bold text-foreground/80 drop-shadow">
+        <div className="pointer-events-none absolute inset-x-0 top-1/3 text-center font-display text-xl font-bold text-white/90 drop-shadow">
           Koppints egy elemre lent!
-          <div className="mt-1 text-sm font-semibold text-foreground/60">
+          <div className="mt-1 text-sm font-semibold text-white/70">
             Egy ujj: emelés, építés, dobás · Közben másik ujj a FORGAT gombon · Két ujj üresen: nézet
           </div>
         </div>

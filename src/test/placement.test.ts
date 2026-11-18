@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { computeCarry, pickSpawn, quatYaw, HALF_PI, type Other } from "@/game/placement";
+import { computeCarry, overlapsOther, pickSpawn, quatYaw, HALF_PI, type Other } from "@/game/placement";
 import { BLOCK_SCALE as S, DRAG_LIFT, HOVER_GAP, RUG_H } from "@/game/shapes";
 
 const id = { x: 0, y: 0, z: 0, w: 1 };
@@ -54,17 +54,16 @@ describe("computeCarry", () => {
 
 describe("climbing and sideways collisions", () => {
   const base = cubeAt(1, 0, RUG_H + 0.5 * S, 0);
-  it("rises first: while its bottom is below the support top it stays beside it, not inside", () => {
+  it("goes straight on top of a support, even when it starts low (it does not collide, so it cannot shove)", () => {
     const low = RUG_H + 0.5 * S + DRAG_LIFT;
     const r = computeCarry({ kind: "cube", x: 0.3, z: 0, yaw: 0, heldY: low, stickyId: null, others: [base] });
     expect(r.supportId).toBe(1);
-    expect(r.y).toBeGreaterThan(RUG_H + S);
-    expect(Math.abs(r.x)).toBeGreaterThanOrEqual(S - 1e-6); // pushed out to the side
+    expect(r.y).toBeCloseTo(RUG_H + S + 0.5 * S + HOVER_GAP);
+    expect(Math.abs(r.x)).toBeLessThan(0.3 * S);
   });
-  it("slides on top once it has cleared the support", () => {
-    const high = RUG_H + S + 0.5 * S + HOVER_GAP;
-    const r = computeCarry({ kind: "cube", x: 0.3, z: 0, yaw: 0, heldY: high, stickyId: null, others: [base] });
-    expect(Math.abs(r.x)).toBeLessThan(0.7 * S);
+  it("detects a block that sits inside another", () => {
+    expect(overlapsOther("cube", 0.2, RUG_H + 0.5 * S, 0, 0, [base])).toBe(true);
+    expect(overlapsOther("cube", 0, RUG_H + 1.5 * S + HOVER_GAP, 0, 0, [base])).toBe(false);
   });
   it("does not overlap a neighbour on the floor (no shoving, no pop on release)", () => {
     const r = computeCarry({ kind: "cube", x: 0.8 * S, z: 0, yaw: 0, heldY: RUG_H + 0.5 * S + DRAG_LIFT, stickyId: null, others: [base] });

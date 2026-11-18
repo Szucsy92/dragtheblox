@@ -119,13 +119,6 @@ export function computeCarry(input: CarryInput): CarryResult {
     return separate({ x, z, y, yaw: gy, top: best.top, supportId: best.o.id, snapped: false }, kind, heldY, others);
   }
 
-  // Not yet above the top: rise first. No magnet yet; the finger position decides which side it waits on.
-  const oyaw0 = quatYaw(best.o.q);
-  if (heldY - hy < best.top - 0.01) {
-    const yaw0 = oyaw0 + Math.round((yawPref - oyaw0) / HALF_PI) * HALF_PI;
-    return separate({ x, z, y, yaw: yaw0, top: best.top, supportId: best.o.id, snapped: false }, kind, heldY, others);
-  }
-
   // Flat top: copy the support's orientation and pull onto its half-cube grid.
   const o = best.o;
   const oyaw = quatYaw(o.q);
@@ -146,16 +139,15 @@ export function computeCarry(input: CarryInput): CarryResult {
 }
 
 /**
- * The carried block must never overlap another block sideways (the physics would shove it away, or it would
- * pop out on release). Any block that is level with the carried one is an obstacle: the target is pushed out
- * of it. This also gives the "rise first, then slide on top" order: while the carried block's bottom is still
- * below a support's top, that support is an obstacle too.
+ * The place where the block will end up must not overlap another block sideways (it would pop out on release).
+ * Any block that is level with the TARGET height is an obstacle and the target is pushed out of it. The carried
+ * block itself does not collide with other blocks, so this is the only thing keeping them apart.
  */
 function separate(r: CarryResult, kind: ShapeKind, heldY: number, others: Other[]): CarryResult {
   const [hx, hy, hz] = halfExtents(kind);
   const c = Math.abs(Math.cos(r.yaw)), s = Math.abs(Math.sin(r.yaw));
   const fx = c * hx + s * hz, fz = s * hx + c * hz;
-  const lo = Math.min(heldY, r.y) - hy, hi = Math.max(heldY, r.y) + hy;
+  const lo = r.y - hy, hi = r.y + hy;
   let px = r.x, pz = r.z, moved = false;
   for (let pass = 0; pass < 4; pass++) {
     let any = false;
@@ -172,6 +164,19 @@ function separate(r: CarryResult, kind: ShapeKind, heldY: number, others: Other[
     if (!any) break;
   }
   return moved ? { ...r, x: px, z: pz, snapped: false } : r;
+}
+
+/** Would a block of this kind, placed at this pose, intersect any other block? (bounding boxes, small tolerance) */
+export function overlapsOther(kind: ShapeKind, x: number, y: number, z: number, yaw: number, others: Other[]): boolean {
+  const [hx, hy, hz] = halfExtents(kind);
+  const c = Math.abs(Math.cos(yaw)), s = Math.abs(Math.sin(yaw));
+  const fx = c * hx + s * hz, fz = s * hx + c * hz;
+  const tol = 0.04;
+  for (const o of others) {
+    const [ax, ay, az] = worldHalf(o.kind, o.q);
+    if (Math.abs(x - o.x) < fx + ax - tol && Math.abs(z - o.z) < fz + az - tol && Math.abs(y - o.y) < hy + ay - tol) return true;
+  }
+  return false;
 }
 
 /** A free spot to drop a new block: away from the others, never on top of a tower if avoidable. */

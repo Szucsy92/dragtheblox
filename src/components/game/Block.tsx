@@ -3,7 +3,7 @@ import * as THREE from "three";
 import { RoundedBox } from "@react-three/drei";
 import { RigidBody, CuboidCollider, BallCollider, ConvexHullCollider, type RapierRigidBody } from "@react-three/rapier";
 import type { ThreeEvent } from "@react-three/fiber";
-import { BLOCK_SCALE as S, GRAVITY, type BlockData } from "@/game/shapes";
+import { BLOCK_SCALE as S, GRAVITY, GROUP_BLOCK, type BlockData } from "@/game/shapes";
 import { bodies, kinds } from "@/game/registry";
 import { knock } from "@/game/audio";
 
@@ -171,6 +171,7 @@ export const Block = memo(function Block({ data, onGrab, active }: Props) {
       colliders={colliders}
       friction={0.9}
       restitution={0}
+      collisionGroups={GROUP_BLOCK}
       linearDamping={0.15}
       angularDamping={0.8}
       onContactForce={(p) => {

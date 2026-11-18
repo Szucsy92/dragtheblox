@@ -63,6 +63,12 @@ export interface BlockData {
   spawn: [number, number, number];
 }
 
+// ---- Collision groups: (membership << 16) | filter ----
+// The carried block only collides with the ground and walls, never with other blocks: it cannot shove anything.
+export const GROUP_BLOCK = 0x00010005; // blocks: collide with blocks + ground
+export const GROUP_HELD = 0x00020004; // carried block: ground + walls only
+export const GROUP_GROUND = 0x0004ffff; // rug and walls: collide with everything
+
 // ---- World ----
 export const PLAY_AREA = 6.2; // radius of the circular play area (the rug)
 /** The rug has real thickness: this is the height of the walkable ground, visuals and physics agree. */
