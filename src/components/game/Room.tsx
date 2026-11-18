@@ -1,7 +1,7 @@
 import { useMemo } from "react";
 import * as THREE from "three";
 import { RigidBody, CuboidCollider } from "@react-three/rapier";
-import { PLAY_AREA } from "@/game/shapes";
+import { PLAY_AREA, RUG_H } from "@/game/shapes";
 
 function floorTexture() {
   const c = document.createElement("canvas");
@@ -62,13 +62,16 @@ export function Room() {
         <circleGeometry args={[W + 1.25, 96]} />
         <meshStandardMaterial map={floor} roughness={0.7} />
       </mesh>
-      <mesh rotation-x={-Math.PI / 2} position-y={0.01} receiveShadow userData={{ surface: true }}>
-        <circleGeometry args={[W, 64]} />
-        <meshStandardMaterial map={rug} roughness={0.95} />
+      {/* The rug is a real slab of thickness RUG_H; the physics ground is exactly its top face. */}
+      <mesh position-y={RUG_H / 2} receiveShadow userData={{ surface: true }}>
+        <cylinderGeometry args={[W, W, RUG_H, 96]} />
+        <meshStandardMaterial attach="material-0" color="#e9dcc3" roughness={0.95} />
+        <meshStandardMaterial attach="material-1" map={rug} roughness={0.95} />
+        <meshStandardMaterial attach="material-2" color="#e9dcc3" roughness={0.95} />
       </mesh>
-      <RigidBody type="fixed" colliders={false} friction={1}>
-        <CuboidCollider args={[30, 0.5, 30]} position={[0, -0.5, 0]} />
-        {/* A smooth-enough circular boundary made from short tangential wall segments. */}
+      <RigidBody type="fixed" colliders={false} friction={1} restitution={0}>
+        <CuboidCollider args={[30, 0.5, 30]} position={[0, RUG_H - 0.5, 0]} />
+        {/* A smooth-enough circular boundary made from short tangential wall segments (inner face inside the rug edge). */}
         {Array.from({ length: 64 }, (_, i) => {
           const a = (i / 64) * Math.PI * 2;
           const r = W + 0.12;
@@ -78,6 +81,7 @@ export function Room() {
               args={[0.34, 8, 0.16]}
               position={[Math.cos(a) * r, 8, Math.sin(a) * r]}
               rotation={[0, -a + Math.PI / 2, 0]}
+              friction={0.1}
             />
           );
         })}

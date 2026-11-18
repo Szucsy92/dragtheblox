@@ -1,14 +1,16 @@
-import { Suspense, useCallback, useEffect, useRef, useState } from "react";
+import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import * as THREE from "three";
 import { Canvas, useFrame, useThree, type ThreeEvent } from "@react-three/fiber";
 import { Environment, Lightformer, OrbitControls, ContactShadows } from "@react-three/drei";
 import { Physics } from "@react-three/rapier";
-import { Trash2, Sparkles, Smartphone, SmartphoneNfc } from "lucide-react";
+import { Trash2, Sparkles, Smartphone, SmartphoneNfc, RotateCw } from "lucide-react";
 import {
-  SHAPES, TOY_COLORS, shapeDef, type BlockData, type ShapeKind,
-  SPAWN_HEIGHT, DRAG_FOLLOW, THROW_MAX, SHAKE_THRESHOLD, SHAKE_IMPULSE,
+  SHAPES, TOY_COLORS, shapeDef, halfExtents, type BlockData, type ShapeKind,
+  GRAVITY, CARRY_GAIN, CARRY_MAX, ROT_GAIN, ROT_MAX, THROW_MIN, THROW_MAX,
+  SHAKE_THRESHOLD, SHAKE_IMPULSE, RUG_H,
 } from "@/game/shapes";
-import { bodies } from "@/game/registry";
+import { computeCarry, pickSpawn, HALF_PI } from "@/game/placement";
+import { bodies, kinds, snapshot } from "@/game/registry";
 import { sfx, unlockAudio } from "@/game/audio";
 import { Block } from "./Block";
 import { Room } from "./Room";
@@ -19,101 +21,125 @@ interface DragState {
   pointerId: number;
   x: number;
   y: number;
-  vel: THREE.Vector3;
-  history: { t: number; p: THREE.Vector3 }[];
-  startY: number;
-  startPointerY: number;
+  /** Finger-to-block offset on the ground plane, measured on the first frame so the block never jumps. */
+  offX: number;
+  offZ: number;
+  started: boolean;
+  /** Preferred yaw; the player turns it with the rotate button. */
+  yaw: number;
 }
 
 const tmpV = new THREE.Vector3();
 const ndc = new THREE.Vector2();
 const ray = new THREE.Raycaster();
-const yawQ = new THREE.Quaternion();
+const UP = new THREE.Vector3(0, 1, 0);
 const curQ = new THREE.Quaternion();
+const tgtQ = new THREE.Quaternion();
+const errQ = new THREE.Quaternion();
 const eul = new THREE.Euler();
 
-function DragController({
-  drag, blocks,
-}: { drag: React.MutableRefObject<DragState | null>; blocks: React.MutableRefObject<BlockData[]> }) {
+const MARK_FREE = new THREE.Color("#ffffff");
+const MARK_SNAP = new THREE.Color("#7dffb0");
+
+/**
+ * Carries the held block. The block stays a normal dynamic body (gravity off) and is steered with
+ * velocities, so it can never sink into the rug or other blocks and nothing "pops" when it is let go.
+ * Also draws the landing marker: a flat footprint on whatever surface the block would land on.
+ */
+function DragController({ drag }: { drag: React.MutableRefObject<DragState | null> }) {
   const { camera, gl } = useThree();
-  const plane = useRef(new THREE.Plane(new THREE.Vector3(0, 1, 0), 0));
+  const plane = useMemo(() => new THREE.Plane(new THREE.Vector3(0, 1, 0), 0), []);
+  const rectRef = useRef<THREE.Mesh>(null);
+  const roundRef = useRef<THREE.Mesh>(null);
+  const markMat = useMemo(
+    () => new THREE.MeshBasicMaterial({ color: "#ffffff", transparent: true, opacity: 0.45, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -2, toneMapped: false }),
+    [],
+  );
 
-  useFrame((_, delta) => {
+  useFrame(() => {
+    const rect = rectRef.current, round = roundRef.current;
+    const hide = () => { if (rect) rect.visible = false; if (round) round.visible = false; };
     const d = drag.current;
-    const dt = Math.min(delta, 0.05);
-    const heldBody = d ? bodies.get(d.id) : null;
+    const body = d ? bodies.get(d.id) : null;
+    const kind = d ? kinds.get(d.id) : null;
+    if (!d || !body || !kind) return hide();
 
-    if (!d || !heldBody) return;
-    const data = blocks.current.find((b) => b.id === d.id);
-    if (!data) return;
-    const def = shapeDef(data.kind);
-    const rect = gl.domElement.getBoundingClientRect();
-    ndc.set(((d.x - rect.left) / rect.width) * 2 - 1, -((d.y - rect.top) / rect.height) * 2 + 1);
+    const t = body.translation();
+    const bb = gl.domElement.getBoundingClientRect();
+    ndc.set(((d.x - bb.left) / bb.width) * 2 - 1, -((d.y - bb.top) / bb.height) * 2 + 1);
     ray.setFromCamera(ndc, camera);
+    // The finger ray is intersected at the block's own height, so the block stays under the finger while it climbs.
+    plane.constant = -t.y;
+    const hit = ray.ray.intersectPlane(plane, tmpV);
+    if (!hit) return hide();
 
-    // Vertical finger travel lifts the toy; horizontal movement is projected
-    // onto a horizontal plane at that height instead of being clamped to floor level.
-    const lift = (d.startPointerY - d.y) * 0.018;
-    let targetY = Math.max(def.halfHeight + 0.06, d.startY + lift);
-    plane.current.constant = -targetY;
-    const target = ray.ray.intersectPlane(plane.current, tmpV);
-    if (!target) return;
-
-    // Friendly tower assist: when the dragged block is brought over another
-    // block, gently align its base with that block's top surface.
-    let bestTop: number | null = null;
-    let bestDistance = Infinity;
-    bodies.forEach((candidate, candidateId) => {
-      if (candidateId === d.id) return;
-      const pos = candidate.translation();
-      const candidateData = blocks.current.find((b) => b.id === candidateId);
-      if (!candidateData) return;
-      const candidateDef = shapeDef(candidateData.kind);
-      const dx = target.x - pos.x;
-      const dz = target.z - pos.z;
-      const reach = Math.max(0.8, def.halfWidth * 0.72 + candidateDef.halfWidth * 0.72);
-      const distance = Math.hypot(dx, dz);
-      const candidateTop = pos.y + candidateDef.halfHeight * 1.18;
-      if (distance < reach && (candidateTop > (bestTop ?? -Infinity) || (candidateTop === bestTop && distance < bestDistance))) {
-        bestDistance = distance;
-        bestTop = candidateTop;
-      }
-    });
-    // The lift is automatic: horizontal movement over a tower raises the
-    // carried piece to the highest reachable top surface.
-    if (bestTop !== null) {
-      targetY = bestTop + def.halfHeight * 1.18;
+    if (!d.started) {
+      d.started = true;
+      const [hx, , hz] = halfExtents(kind);
+      let ox = t.x - hit.x, oz = t.z - hit.z;
+      const m = Math.hypot(ox, oz), max = Math.max(hx, hz);
+      if (m > max) { ox *= max / m; oz *= max / m; }
+      d.offX = ox;
+      d.offZ = oz;
+      const r0 = body.rotation();
+      eul.setFromQuaternion(curQ.set(r0.x, r0.y, r0.z, r0.w), "YXZ");
+      d.yaw = Math.round(eul.y / HALF_PI) * HALF_PI; // straighten to the 90° grid
     }
-    target.y = targetY;
 
-    const cur = heldBody.translation();
-    const k = 1 - Math.exp(-DRAG_FOLLOW * dt);
-    const next = new THREE.Vector3(
-      cur.x + (target.x - cur.x) * k,
-      cur.y + (target.y - cur.y) * k,
-      cur.z + (target.z - cur.z) * k,
-    );
-    heldBody.setNextKinematicTranslation(next);
+    const res = computeCarry({
+      kind, x: hit.x + d.offX, z: hit.z + d.offZ, yaw: d.yaw, heldY: t.y, others: snapshot(d.id),
+    });
 
-    // Keep yaw but remove accidental tilt while positioning pieces.
-    const r = heldBody.rotation();
+    // Position: steer by velocity (clamped), never teleport.
+    let vx = (res.x - t.x) * CARRY_GAIN, vy = (res.y - t.y) * CARRY_GAIN, vz = (res.z - t.z) * CARRY_GAIN;
+    const sp = Math.hypot(vx, vy, vz);
+    if (sp > CARRY_MAX) { const k = CARRY_MAX / sp; vx *= k; vy *= k; vz *= k; }
+    body.setLinvel({ x: vx, y: vy, z: vz }, true);
+
+    // Orientation: turn upright and to the target yaw by angular velocity along the shortest path.
+    const r = body.rotation();
     curQ.set(r.x, r.y, r.z, r.w);
-    eul.setFromQuaternion(curQ, "YXZ");
-    yawQ.setFromEuler(eul.set(0, eul.y, 0, "YXZ"));
-    curQ.slerp(yawQ, k);
-    heldBody.setNextKinematicRotation(curQ);
+    tgtQ.setFromAxisAngle(UP, res.yaw);
+    errQ.copy(tgtQ).multiply(curQ.invert());
+    if (errQ.w < 0) { errQ.x = -errQ.x; errQ.y = -errQ.y; errQ.z = -errQ.z; errQ.w = -errQ.w; }
+    const sinHalf = Math.hypot(errQ.x, errQ.y, errQ.z);
+    if (sinHalf < 1e-4) {
+      body.setAngvel({ x: 0, y: 0, z: 0 }, true);
+    } else {
+      const angle = 2 * Math.atan2(sinHalf, errQ.w);
+      const w = Math.min(ROT_MAX, angle * ROT_GAIN) / sinHalf;
+      body.setAngvel({ x: errQ.x * w, y: errQ.y * w, z: errQ.z * w }, true);
+    }
 
-    const now = performance.now();
-    d.history.push({ t: now, p: next.clone() });
-    while (d.history.length > 2 && now - d.history[0]!.t > 120) d.history.shift();
+    // Landing marker.
+    const def = shapeDef(kind);
+    const [hx, , hz] = halfExtents(kind);
+    const m = def.round ? round : rect;
+    if (rect) rect.visible = !def.round;
+    if (round) round.visible = def.round;
+    if (m) {
+      m.position.set(res.x, res.top + 0.012, res.z);
+      m.rotation.set(-Math.PI / 2, res.yaw, 0, "YXZ");
+      m.scale.set(hx * 2, hz * 2, 1);
+    }
+    markMat.color.copy(res.snapped ? MARK_SNAP : MARK_FREE);
+    markMat.opacity = res.snapped ? 0.65 : 0.4;
   });
-  return null;
+
+  return (
+    <>
+      <mesh ref={rectRef} visible={false} renderOrder={2} material={markMat}>
+        <planeGeometry args={[1, 1]} />
+      </mesh>
+      <mesh ref={roundRef} visible={false} renderOrder={2} material={markMat}>
+        <circleGeometry args={[0.5, 48]} />
+      </mesh>
+    </>
+  );
 }
 
 export default function Playroom() {
   const [blocks, setBlocks] = useState<BlockData[]>([]);
-  const blocksRef = useRef<BlockData[]>([]);
-  blocksRef.current = blocks;
   const [colorIdx, setColorIdx] = useState(0);
   const [activeId, setActiveId] = useState<number | null>(null);
   const [trashHot, setTrashHot] = useState(false);
@@ -139,7 +165,8 @@ export default function Playroom() {
     const color = TOY_COLORS[colorIdx % TOY_COLORS.length]!;
     setColorIdx((i) => i + 1);
     const id = nextId.current++;
-    setBlocks((b) => [...b, { id, kind, color, spawn: [(Math.random() - 0.5) * 2, SPAWN_HEIGHT, (Math.random() - 0.5) * 2] }]);
+    const pos = pickSpawn(kind, snapshot());
+    setBlocks((b) => [...b, { id, kind, color, spawn: pos }]);
     sfx.spawn();
   };
 
@@ -157,23 +184,39 @@ export default function Playroom() {
       return;
     }
     if (body) {
-      body.setBodyType(0, true); // dynamic
-      const h = d.history;
-      let v = new THREE.Vector3();
-      if (h.length >= 2) {
-        const a = h[0]!, b = h[h.length - 1]!;
-        const dt = Math.max(0.016, (b.t - a.t) / 1000);
-        v = b.p.clone().sub(a.p).divideScalar(dt);
-        // throwing: flicks fly with a little arc
-        const speed = v.length();
-        if (speed > 3.5) v.y += Math.min(1.2, speed * 0.12);
+      body.setGravityScale(1, true);
+      const lv = body.linvel();
+      const speed = Math.hypot(lv.x, lv.z);
+      if (speed > THROW_MIN) {
+        // Throw: keep the carried velocity, add a little arc, cap it.
+        const v = new THREE.Vector3(lv.x, Math.max(0, lv.y), lv.z);
+        v.y += Math.min(1.7, speed * 0.12);
         if (v.length() > THROW_MAX) v.setLength(THROW_MAX);
+        body.setLinvel(v, true);
+        body.setAngvel({ x: v.z * 0.3, y: 0, z: -v.x * 0.3 }, true);
+      } else {
+        // Gentle place: no leftover sliding or spinning, it just settles.
+        body.setLinvel({ x: 0, y: 0, z: 0 }, true);
+        body.setAngvel({ x: 0, y: 0, z: 0 }, true);
       }
-      body.setLinvel(v, true);
-      body.setAngvel({ x: v.z * 0.3, y: 0, z: -v.x * 0.3 }, true);
     }
     sfx.drop();
   }, []);
+
+  const turnHeld = useCallback(() => {
+    const d = drag.current;
+    if (!d) return;
+    d.yaw += HALF_PI;
+    sfx.click();
+  }, []);
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "e" || e.key === "E" || e.key === " ") turnHeld();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [turnHeld]);
 
   const onGrab = useCallback((id: number, e: ThreeEvent<PointerEvent>) => {
     if (e.pointerType === "mouse" && e.button !== 0) return;
@@ -184,14 +227,16 @@ export default function Playroom() {
     if (!body) return;
     setNotice("");
     unlockAudio();
-    body.setBodyType(2, true); // kinematic position
-    drag.current = { id, pointerId: e.pointerId, x: e.clientX, y: e.clientY, vel: new THREE.Vector3(), history: [], startY: body.translation().y, startPointerY: e.clientY };
+    body.setGravityScale(0, true); // carried: stays dynamic (collides properly), just floats
+    drag.current = { id, pointerId: e.pointerId, x: e.clientX, y: e.clientY, offX: 0, offZ: 0, started: false, yaw: 0 };
     setActiveId(id);
     sfx.pick();
   }, []);
 
   useEffect(() => {
     const down = (e: PointerEvent) => {
+      // The rotate button is meant to be pressed with a second finger while carrying.
+      if ((e.target as Element | null)?.closest?.("[data-keep-drag]")) return;
       if (e.pointerType === "touch") touches.current.add(e.pointerId);
       // second finger: cancel drag so the view can rotate
       if (touches.current.size > 1 && drag.current) {
@@ -199,7 +244,7 @@ export default function Playroom() {
         const body = bodies.get(active.id);
         drag.current = null;
         if (body) {
-          body.setBodyType(0, true);
+          body.setGravityScale(1, true);
           body.setLinvel({ x: 0, y: 0, z: 0 }, true);
           body.setAngvel({ x: 0, y: 0, z: 0 }, true);
         }
@@ -322,15 +367,15 @@ export default function Playroom() {
           <Lightformer intensity={1} color="#a8d8ff" position={[6, 2, 2]} rotation-y={-Math.PI / 2} scale={[20, 2, 1]} />
         </Environment>
         <Suspense fallback={null}>
-          <Physics gravity={[0, -9.81, 0]}>
+          <Physics gravity={[0, -GRAVITY, 0]} timeStep={1 / 120}>
             <Room />
             {blocks.map((b) => (
               <Block key={b.id} data={b} onGrab={onGrab} active={activeId === b.id} />
             ))}
           </Physics>
         </Suspense>
-        <ContactShadows position={[0, 0.02, 0]} opacity={0.35} scale={16} blur={2.5} far={4} />
-        <DragController drag={drag} blocks={blocksRef} />
+        <ContactShadows position={[0, RUG_H + 0.004, 0]} opacity={0.35} scale={16} blur={2.5} far={4} />
+        <DragController drag={drag} />
         <OrbitControls
           ref={controls}
           target={[0, 1.5, 0]}
@@ -373,6 +418,20 @@ export default function Playroom() {
         </div>
       </div>
 
+      {/* Rotate the carried block by 90° (second finger while carrying, or the E key) */}
+      {activeId !== null && (
+        <button
+          data-keep-drag
+          onPointerDown={(e) => { e.stopPropagation(); turnHeld(); }}
+          aria-label="Elem forgatása"
+          className="absolute left-3 flex h-24 w-24 flex-col items-center justify-center gap-1 rounded-3xl border-2 border-primary/60 bg-card text-primary shadow-toy transition-transform active:scale-95"
+          style={{ bottom: "calc(env(safe-area-inset-bottom) + 126px)" }}
+        >
+          <RotateCw className="h-11 w-11" />
+          <span className="font-display text-sm font-extrabold">FORGAT</span>
+        </button>
+      )}
+
       {/* Trash */}
       <button
         ref={trashEl}
@@ -397,7 +456,7 @@ export default function Playroom() {
         <div className="pointer-events-none absolute inset-x-0 top-1/3 text-center font-display text-xl font-bold text-foreground/80 drop-shadow">
           Koppints egy elemre lent!
           <div className="mt-1 text-sm font-semibold text-foreground/60">
-            Egy ujj: emelés, építés és dobás · Két ujj: forgatás, nagyítás
+            Egy ujj: emelés, építés, dobás · Közben másik ujj a FORGAT gombon · Két ujj üresen: nézet
           </div>
         </div>
       )}
