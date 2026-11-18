@@ -53,7 +53,7 @@ export interface BlockData {
 export const SPAWN_HEIGHT = 7;
 export const DRAG_LIFT = 0.25;
 export const DRAG_FOLLOW = 16;
-export const THROW_MAX = 12;
+export const THROW_MAX = 6;
 export const SHAKE_THRESHOLD = 9; // m/s² of user acceleration
-export const SHAKE_IMPULSE = 0.07;
+export const SHAKE_IMPULSE = 0.045;
 export const PLAY_AREA = 5.4; // radius of the compact circular play area

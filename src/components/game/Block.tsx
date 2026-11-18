@@ -131,18 +131,20 @@ export const Block = memo(function Block({ data, onGrab, active }: Props) {
       position={data.spawn}
       rotation={rot}
       colliders={colliders}
-      friction={0.9}
-      restitution={0.15}
-      linearDamping={0.05}
-      angularDamping={0.2}
+      friction={0.75}
+      restitution={0.08}
+      linearDamping={0.18}
+      angularDamping={0.55}
       ccd
       onContactForce={(p) => {
         const f = p.maxForceMagnitude;
-        if (f > 40) knock(Math.log10(f) / 4 - 0.35);
+        if (f > 65) knock(Math.log10(f) / 5 - 0.42);
       }}
     >
-      {mesh}
-      {manual}
+      <group scale={1.18}>
+        {mesh}
+        {manual}
+      </group>
     </RigidBody>
   );
 });

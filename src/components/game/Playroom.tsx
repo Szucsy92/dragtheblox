@@ -33,40 +33,15 @@ const curQ = new THREE.Quaternion();
 const eul = new THREE.Euler();
 
 function DragController({
-  drag, blocks, controls, onFrame,
-}: { drag: React.MutableRefObject<DragState | null>; blocks: React.MutableRefObject<BlockData[]>; controls: React.MutableRefObject<any>; onFrame: () => void }) {
+  drag, blocks,
+}: { drag: React.MutableRefObject<DragState | null>; blocks: React.MutableRefObject<BlockData[]> }) {
   const { camera, gl } = useThree();
   const plane = useRef(new THREE.Plane(new THREE.Vector3(0, 1, 0), 0));
-  const desiredTarget = useRef(new THREE.Vector3(0, 1.5, 0));
-  const desiredDistance = useRef(19);
 
   useFrame((_, delta) => {
-    onFrame();
     const d = drag.current;
     const dt = Math.min(delta, 0.05);
-    const orbit = controls.current;
     const heldBody = d ? bodies.get(d.id) : null;
-    let highestY = 0;
-    bodies.forEach((body) => { highestY = Math.max(highestY, body.translation().y); });
-
-    // Only take over the camera while lifting or when a tall tower needs framing.
-    // Otherwise the player's normal pinch-to-zoom remains completely manual.
-    const autoFrame = Boolean(d);
-    if (autoFrame) {
-      const wantedY = Math.max(1.5, highestY * 0.58);
-      desiredTarget.current.y += (wantedY - desiredTarget.current.y) * (1 - Math.exp(-2.2 * dt));
-      const wantedDistance = Math.min(48, 19 + Math.max(0, highestY - 3) * 1.45);
-      desiredDistance.current += (wantedDistance - desiredDistance.current) * (1 - Math.exp(-1.8 * dt));
-      if (orbit) {
-        const offset = camera.position.clone().sub(orbit.target);
-        if (offset.lengthSq() > 0.001) {
-          offset.setLength(desiredDistance.current);
-          orbit.target.y += (desiredTarget.current.y - orbit.target.y) * (1 - Math.exp(-2.2 * dt));
-          camera.position.copy(orbit.target).add(offset);
-          orbit.update();
-        }
-      }
-    }
 
     if (!d || !heldBody) return;
     const data = blocks.current.find((b) => b.id === d.id);
@@ -79,10 +54,36 @@ function DragController({
     // Vertical finger travel lifts the toy; horizontal movement is projected
     // onto a horizontal plane at that height instead of being clamped to floor level.
     const lift = (d.startPointerY - d.y) * 0.018;
-    const targetY = Math.max(def.halfHeight + 0.06, d.startY + lift);
+    let targetY = Math.max(def.halfHeight + 0.06, d.startY + lift);
     plane.current.constant = -targetY;
     const target = ray.ray.intersectPlane(plane.current, tmpV);
     if (!target) return;
+
+    // Friendly tower assist: when the dragged block is brought over another
+    // block, gently align its base with that block's top surface.
+    let bestTop: number | null = null;
+    let bestDistance = Infinity;
+    bodies.forEach((candidate, candidateId) => {
+      if (candidateId === d.id) return;
+      const pos = candidate.translation();
+      const candidateData = blocks.current.find((b) => b.id === candidateId);
+      if (!candidateData) return;
+      const candidateDef = shapeDef(candidateData.kind);
+      const dx = target.x - pos.x;
+      const dz = target.z - pos.z;
+      const reach = Math.max(0.8, def.halfWidth * 0.72 + candidateDef.halfWidth * 0.72);
+      const distance = Math.hypot(dx, dz);
+      const candidateTop = pos.y + candidateDef.halfHeight * 1.18;
+      if (distance < reach && (candidateTop > (bestTop ?? -Infinity) || (candidateTop === bestTop && distance < bestDistance))) {
+        bestDistance = distance;
+        bestTop = candidateTop;
+      }
+    });
+    // The lift is automatic: horizontal movement over a tower raises the
+    // carried piece to the highest reachable top surface.
+    if (bestTop !== null) {
+      targetY = bestTop + def.halfHeight * 1.18;
+    }
     target.y = targetY;
 
     const cur = heldBody.translation();
@@ -116,6 +117,7 @@ export default function Playroom() {
   const [colorIdx, setColorIdx] = useState(0);
   const [activeId, setActiveId] = useState<number | null>(null);
   const [trashHot, setTrashHot] = useState(false);
+  const [notice, setNotice] = useState("");
   const [shakeOn, setShakeOn] = useState(false);
   const [ready, setReady] = useState(false);
   const drag = useRef<DragState | null>(null);
@@ -132,6 +134,7 @@ export default function Playroom() {
   };
 
   const spawn = (kind: ShapeKind) => {
+    setNotice("");
     unlockAudio();
     const color = TOY_COLORS[colorIdx % TOY_COLORS.length]!;
     setColorIdx((i) => i + 1);
@@ -149,6 +152,7 @@ export default function Playroom() {
     const body = bodies.get(d.id);
     if (overTrash(x, y)) {
       setBlocks((b) => b.filter((bl) => bl.id !== d.id));
+      setNotice("A kocka a kukába került!");
       sfx.trash();
       return;
     }
@@ -162,7 +166,7 @@ export default function Playroom() {
         v = b.p.clone().sub(a.p).divideScalar(dt);
         // throwing: flicks fly with a little arc
         const speed = v.length();
-        if (speed > 2) v.y += Math.min(4, speed * 0.25);
+        if (speed > 3.5) v.y += Math.min(1.2, speed * 0.12);
         if (v.length() > THROW_MAX) v.setLength(THROW_MAX);
       }
       body.setLinvel(v, true);
@@ -178,6 +182,7 @@ export default function Playroom() {
     if (drag.current) return;
     const body = bodies.get(id);
     if (!body) return;
+    setNotice("");
     unlockAudio();
     body.setBodyType(2, true); // kinematic position
     drag.current = { id, pointerId: e.pointerId, x: e.clientX, y: e.clientY, vel: new THREE.Vector3(), history: [], startY: body.translation().y, startPointerY: e.clientY };
@@ -189,7 +194,18 @@ export default function Playroom() {
     const down = (e: PointerEvent) => {
       if (e.pointerType === "touch") touches.current.add(e.pointerId);
       // second finger: cancel drag so the view can rotate
-      if (touches.current.size > 1 && drag.current) release(drag.current.x, -9999);
+      if (touches.current.size > 1 && drag.current) {
+        const active = drag.current;
+        const body = bodies.get(active.id);
+        drag.current = null;
+        if (body) {
+          body.setBodyType(0, true);
+          body.setLinvel({ x: 0, y: 0, z: 0 }, true);
+          body.setAngvel({ x: 0, y: 0, z: 0 }, true);
+        }
+        setActiveId(null);
+        setTrashHot(false);
+      }
     };
     const move = (e: PointerEvent) => {
       const d = drag.current;
@@ -271,6 +287,7 @@ export default function Playroom() {
     drag.current = null;
     setActiveId(null);
     setBlocks([]);
+    setNotice("Minden kocka eltűnt!");
     sfx.clear();
   };
 
@@ -313,11 +330,15 @@ export default function Playroom() {
           </Physics>
         </Suspense>
         <ContactShadows position={[0, 0.02, 0]} opacity={0.35} scale={16} blur={2.5} far={4} />
-        <DragController drag={drag} blocks={blocksRef} controls={controls} onFrame={() => {}} />
+        <DragController drag={drag} blocks={blocksRef} />
         <OrbitControls
           ref={controls}
           target={[0, 1.5, 0]}
           enablePan={false}
+          enableRotate
+          enableZoom
+          rotateSpeed={0.75}
+          zoomSpeed={0.8}
           minDistance={5}
           maxDistance={48}
           maxPolarAngle={Math.PI / 2.15}
@@ -345,7 +366,7 @@ export default function Playroom() {
           <button
             onClick={clearAll}
             aria-label="Minden törlése"
-            className="flex h-11 items-center gap-1.5 rounded-full bg-card/85 px-4 font-display text-sm font-bold text-card-foreground shadow-toy backdrop-blur transition-transform active:scale-95"
+            className="flex min-h-14 items-center gap-2 rounded-full bg-card/85 px-4 font-display text-base font-bold text-card-foreground shadow-toy backdrop-blur transition-transform active:scale-95"
           >
             <Sparkles className="h-5 w-5" /> Mind el
           </button>
@@ -356,13 +377,20 @@ export default function Playroom() {
       <button
         ref={trashEl}
         aria-label="Kuka: ide húzd a törlendő elemet"
-        className={`absolute right-3 flex h-16 w-16 items-center justify-center rounded-full shadow-toy transition-all ${
-          trashHot ? "scale-125 bg-destructive text-destructive-foreground" : activeId ? "scale-110 bg-card text-destructive" : "bg-card/70 text-muted-foreground"
+        className={`absolute right-3 flex h-24 w-24 flex-col items-center justify-center gap-1 rounded-3xl border-2 shadow-toy transition-all ${
+          trashHot ? "scale-110 border-destructive bg-destructive text-destructive-foreground" : activeId ? "scale-105 border-destructive/50 bg-card text-destructive" : "border-border bg-card/90 text-muted-foreground"
         }`}
-        style={{ bottom: "calc(env(safe-area-inset-bottom) + 112px)" }}
+        style={{ bottom: "calc(env(safe-area-inset-bottom) + 126px)" }}
       >
-        <Trash2 className="h-7 w-7" />
+        <Trash2 className="h-11 w-11" />
+        <span className="font-display text-sm font-extrabold">KUKA</span>
       </button>
+
+      {notice && (
+        <div role="status" className="pointer-events-none absolute left-1/2 top-20 -translate-x-1/2 rounded-full bg-card/95 px-5 py-3 text-center font-display text-base font-bold text-card-foreground shadow-toy backdrop-blur">
+          {notice}
+        </div>
+      )}
 
       {/* Hint */}
       {blocks.length === 0 && (
@@ -382,10 +410,10 @@ export default function Playroom() {
               key={s.kind}
               onClick={() => spawn(s.kind)}
               aria-label={s.label}
-              className="flex min-w-[64px] flex-1 flex-col items-center gap-0.5 rounded-2xl px-1 py-1.5 transition-transform hover:bg-muted active:scale-90"
+              className="flex min-w-[78px] min-h-[88px] flex-1 flex-col items-center justify-center gap-1 rounded-2xl px-2 py-2 transition-transform hover:bg-muted active:scale-95"
             >
               <ShapeIcon kind={s.kind} color={nextColor} />
-              <span className="font-display text-[11px] font-bold text-card-foreground">{s.label}</span>
+              <span className="font-display text-xs font-extrabold text-card-foreground">{s.label}</span>
             </button>
           ))}
         </div>
