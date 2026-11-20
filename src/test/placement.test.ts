@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { computeCarry, overlapsOther, pickSpawn, quatYaw, HALF_PI, type Other } from "@/game/placement";
-import { BLOCK_SCALE as S, DRAG_LIFT, HOVER_GAP, RUG_H } from "@/game/shapes";
+import { clampArena, computeCarry, overlapsOther, pickBlock, pickSpawn, quatYaw, HALF_PI, type Other } from "@/game/placement";
+import { BLOCK_SCALE as S, DRAG_LIFT, HOVER_GAP, PLAY_AREA, RUG_H } from "@/game/shapes";
 
 const id = { x: 0, y: 0, z: 0, w: 1 };
 const yawQ = (a: number) => ({ x: 0, y: Math.sin(a / 2), z: 0, w: Math.cos(a / 2) });
@@ -84,5 +84,38 @@ describe("pickSpawn", () => {
     const [x, y, z] = pickSpawn("cube", others);
     for (const o of others) expect(Math.hypot(x - o.x, z - o.z)).toBeGreaterThan(S);
     expect(y).toBeGreaterThan(RUG_H + S);
+  });
+});
+
+describe("pickBlock (what the finger points at)", () => {
+  // finger ray 5 up and 4 back, looking 45° down at the tower
+  const tower = [cubeAt(1, 0, RUG_H + 0.5 * S, 0), cubeAt(2, 0, RUG_H + 1.5 * S, 0)];
+  const d = Math.SQRT1_2;
+  it("hits the tower from the front and aims at the front edge of its top", () => {
+    const p = pickBlock(0, 5, 4, 0, -d, -d, tower, 9);
+    expect(p?.id).toBe(2);
+    expect(p!.top).toBeCloseTo(RUG_H + 2 * S);
+    expect(Math.abs(p!.z)).toBeLessThanOrEqual(0.5 * S + 1e-9);
+  });
+  it("misses when the ray passes beside the tower", () => {
+    expect(pickBlock(5, 5, 4, 0, -d, -d, tower, 9)).toBeNull();
+  });
+  it("ignores blocks that sit on top of the carried one", () => {
+    expect(pickBlock(0, 5, 4, 0, -d, -d, tower, RUG_H + 0.5 * S)?.id).toBe(1);
+  });
+  it("ignores blocks farther than maxT (behind the aimed floor point)", () => {
+    expect(pickBlock(0, 5, 4, 0, -d, -d, tower, 9, 1)).toBeNull();
+  });
+});
+
+describe("clampArena", () => {
+  it("pulls a far-away aim back inside the rug, footprint included", () => {
+    const r = clampArena({ x: 30, z: 0, y: 1, yaw: 0, top: RUG_H, supportId: null, snapped: false }, "cube");
+    expect(r.x + 0.5 * S).toBeLessThanOrEqual(PLAY_AREA);
+    expect(r.x).toBeGreaterThan(PLAY_AREA - 2 * S);
+  });
+  it("leaves positions inside the rug alone", () => {
+    const r = clampArena({ x: 1, z: 1, y: 1, yaw: 0, top: RUG_H, supportId: null, snapped: false }, "cube");
+    expect(r.x).toBe(1);
   });
 });

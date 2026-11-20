@@ -7,9 +7,9 @@ import { Trash2, Sparkles, Smartphone, SmartphoneNfc, RotateCw } from "lucide-re
 import {
   SHAPES, TOY_COLORS, shapeDef, halfExtents, type BlockData, type ShapeKind,
   GRAVITY, CARRY_GAIN, CARRY_MAX, ROT_GAIN, ROT_MAX, THROW_MIN, THROW_MAX,
-  SHAKE_THRESHOLD, SHAKE_IMPULSE, RUG_H,
+  SHAKE_THRESHOLD, SHAKE_IMPULSE, RUG_H, DRAG_LIFT, PLAY_AREA,
 } from "@/game/shapes";
-import { computeCarry, overlapsOther, pickSpawn, HALF_PI } from "@/game/placement";
+import { computeCarry, overlapsOther, pickBlock, pickSpawn, worldHalf, HALF_PI } from "@/game/placement";
 import { bodies, kinds, snapshot, setCarried } from "@/game/registry";
 import { sfx, unlockAudio } from "@/game/audio";
 import { Block } from "./Block";
@@ -25,10 +25,10 @@ interface DragState {
   offX: number;
   offZ: number;
   started: boolean;
+  x0: number;
+  y0: number;
   /** Last computed target pose (used to place the block cleanly on release). */
   last: { x: number; y: number; z: number; yaw: number } | null;
-  /** Height of the plane the finger ray is intersected with: the carried block's TARGET height, so it cannot drift while climbing. */
-  planeY: number;
   /** Support under the carried block on the previous frame (hysteresis). */
   sticky: number | null;
   /** Preferred yaw; the player turns it with the rotate button. */
@@ -74,16 +74,25 @@ function DragController({ drag }: { drag: React.MutableRefObject<DragState | nul
     const bb = gl.domElement.getBoundingClientRect();
     ndc.set(((d.x - bb.left) / bb.width) * 2 - 1, -((d.y - bb.top) / bb.height) * 2 + 1);
     ray.setFromCamera(ndc, camera);
-    // Intersect at the height the block is heading to (not where it is now): otherwise the hit point slides
-    // toward the camera while the block climbs, it leaves the tower top, drops, and flickers.
-    if (!d.started) d.planeY = t.y;
-    plane.constant = -d.planeY;
+    // Floor aim: the finger ray meets a FIXED plane (carry height above the rug), so lifting the block can never
+    // feed back into where it is aiming.
+    const [, hyHeld] = halfExtents(kind);
+    plane.constant = -(RUG_H + hyHeld + DRAG_LIFT);
     const hit = ray.ray.intersectPlane(plane, tmpV);
-    if (!hit) return hide();
+    const others = snapshot(d.id);
+    // Intent: if the finger points AT another block (a tower image on screen), aim at its top, so the carried
+    // block rises early, while the finger is still over the tower, and goes up there.
+    const o = ray.ray.origin, dir = ray.ray.direction;
+    // Not on the first touch (a block behind the one just grabbed must not steal it), and only what is in
+    // front of the floor point.
+    const moved = Math.hypot(d.x - d.x0, d.y - d.y0) > 14;
+    const pick = moved
+      ? pickBlock(o.x, o.y, o.z, dir.x, dir.y, dir.z, others, t.y, hit ? hit.distanceTo(o) : Infinity)
+      : null;
+    if (!hit && !pick) return hide();
 
-    if (!d.started) {
+    if (!d.started && hit) {
       d.started = true;
-      d.planeY = t.y;
       const [hx, , hz] = halfExtents(kind);
       let ox = t.x - hit.x, oz = t.z - hit.z;
       const m = Math.hypot(ox, oz), max = Math.max(hx, hz);
@@ -95,10 +104,12 @@ function DragController({ drag }: { drag: React.MutableRefObject<DragState | nul
       d.yaw = Math.round(eul.y / HALF_PI) * HALF_PI; // straighten to the 90° grid
     }
 
+    if (!d.started) return hide();
+    const aimX = pick ? pick.x : hit!.x + d.offX;
+    const aimZ = pick ? pick.z : hit!.z + d.offZ;
     const res = computeCarry({
-      kind, x: hit.x + d.offX, z: hit.z + d.offZ, yaw: d.yaw, heldY: t.y, stickyId: d.sticky, others: snapshot(d.id),
+      kind, x: aimX, z: aimZ, yaw: d.yaw, heldY: t.y, stickyId: pick ? pick.id : d.sticky, others,
     });
-    d.planeY = res.y;
     d.last = { x: res.x, y: res.y, z: res.z, yaw: res.yaw };
     d.sticky = res.supportId;
 
@@ -150,6 +161,80 @@ function DragController({ drag }: { drag: React.MutableRefObject<DragState | nul
   );
 }
 
+/**
+ * Safety net: anything that ends up outside the rug or under the floor is put back inside.
+ */
+function Keeper() {
+  useFrame(() => {
+    bodies.forEach((b) => {
+      const t = b.translation();
+      const r = Math.hypot(t.x, t.z);
+      if (r > PLAY_AREA + 0.3 || t.y < -1) {
+        const k = r > 1e-6 ? Math.min(1, (PLAY_AREA * 0.6) / r) : 1;
+        b.setTranslation({ x: t.x * k, y: Math.max(t.y, 0) + 2.5, z: t.z * k }, true);
+        b.setLinvel({ x: 0, y: 0, z: 0 }, true);
+        b.setAngvel({ x: 0, y: 0, z: 0 }, true);
+      }
+    });
+  });
+  return null;
+}
+
+/**
+ * Keeps the whole castle in view: looks at the middle of the highest tower and backs the camera off when the
+ * tower (or the block carried above it) gets tall. It never fights the player: it stands still while the
+ * player is orbiting/zooming, and the distance the player chose is restored when the tower is gone.
+ */
+function AutoFrame({ controls, drag, orbiting }: {
+  controls: React.MutableRefObject<any>;
+  drag: React.MutableRefObject<DragState | null>;
+  orbiting: React.MutableRefObject<boolean>;
+}) {
+  const { camera } = useThree();
+  const userDist = useRef<number | null>(null);
+  const autoDist = useRef(0);
+  const wasOrbiting = useRef(false);
+
+  useFrame((_, delta) => {
+    const ctl = controls.current;
+    if (!ctl) return;
+    const tgt = ctl.target as THREE.Vector3;
+    const dist = camera.position.distanceTo(tgt);
+    if (userDist.current === null) { userDist.current = dist; autoDist.current = dist; }
+    if (orbiting.current) { wasOrbiting.current = true; return; }
+    if (wasOrbiting.current) {
+      // The player just finished moving the camera: if the zoom changed by hand, remember it.
+      wasOrbiting.current = false;
+      if (Math.abs(dist - autoDist.current) > 0.4) userDist.current = dist;
+      autoDist.current = dist;
+      return;
+    }
+
+    let H = 0;
+    bodies.forEach((b, id) => {
+      const k = kinds.get(id);
+      if (!k) return;
+      const t = b.translation(), q = b.rotation();
+      H = Math.max(H, t.y + worldHalf(k, q)[1]);
+    });
+    const d = drag.current;
+    if (d?.last) H = Math.max(H, d.last.y + 1);
+
+    const wantY = Math.max(1.5, H * 0.45);
+    const need = (H + 2) * 2.0; // keeps a tower of height H inside the part of the screen the UI leaves free
+    const wantDist = Math.min(ctl.maxDistance ?? 48, Math.max(userDist.current, need));
+    const k = 1 - Math.exp(-2.5 * Math.min(delta, 0.1));
+
+    const dy = (wantY - tgt.y) * k;
+    tgt.y += dy;
+    camera.position.y += dy;
+    const nd = dist + (wantDist - dist) * k;
+    camera.position.sub(tgt).setLength(nd).add(tgt);
+    autoDist.current = nd;
+  });
+  return null;
+}
+
 export default function Playroom() {
   const [blocks, setBlocks] = useState<BlockData[]>([]);
   const [colorIdx, setColorIdx] = useState(0);
@@ -160,6 +245,7 @@ export default function Playroom() {
   const [ready, setReady] = useState(false);
   const drag = useRef<DragState | null>(null);
   const controls = useRef<any>(null);
+  const orbiting = useRef(false);
   const trashEl = useRef<HTMLButtonElement>(null);
   const nextId = useRef(1);
   const touches = useRef(new Set<number>());
@@ -247,7 +333,7 @@ export default function Playroom() {
     setNotice("");
     unlockAudio();
     setCarried(body, true); // carried: dynamic, floats, collides only with the ground
-    drag.current = { id, pointerId: e.pointerId, x: e.clientX, y: e.clientY, offX: 0, offZ: 0, started: false, last: null, planeY: 0, sticky: null, yaw: 0 };
+    drag.current = { id, pointerId: e.pointerId, x: e.clientX, y: e.clientY, offX: 0, offZ: 0, started: false, x0: e.clientX, y0: e.clientY, last: null, sticky: null, yaw: 0 };
     setActiveId(id);
     sfx.pick();
   }, []);
@@ -395,8 +481,12 @@ export default function Playroom() {
         </Suspense>
         <ContactShadows position={[0, RUG_H + 0.004, 0]} opacity={0.55} scale={16} blur={2.5} far={4} />
         <DragController drag={drag} />
+        <Keeper />
+        <AutoFrame controls={controls} drag={drag} orbiting={orbiting} />
         <OrbitControls
           ref={controls}
+          onStart={() => { orbiting.current = true; }}
+          onEnd={() => { orbiting.current = false; }}
           target={[0, 1.5, 0]}
           enablePan={false}
           enableRotate

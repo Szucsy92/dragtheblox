@@ -1,7 +1,7 @@
 // Pure placement maths for carrying and stacking blocks. No React, no three.js, no physics engine:
 // everything is plain numbers so it can be unit-tested.
 import {
-  BLOCK_SCALE, DRAG_LIFT, HOVER_GAP, PLAY_AREA, RUG_H, SNAP_RANGE, SNAP_STEP,
+  BLOCK_SCALE, ARENA_MARGIN, DRAG_LIFT, HOVER_GAP, PLAY_AREA, RUG_H, SNAP_RANGE, SNAP_STEP,
   SPAWN_HEIGHT, SUPPORT_KEEP, SUPPORT_OVERLAP, TILT_OK, halfExtents, shapeDef, type ShapeKind,
 } from "./shapes";
 
@@ -111,12 +111,12 @@ export function computeCarry(input: CarryInput): CarryResult {
 
   if (!best) {
     const r: CarryResult = { x, z, y: RUG_H + hy + DRAG_LIFT, yaw: gy, top: RUG_H, supportId: null, snapped: false };
-    return separate(r, kind, heldY, others);
+    return finish(r, kind, heldY, others);
   }
 
   const y = best.top + hy + HOVER_GAP;
   if (!best.flat) {
-    return separate({ x, z, y, yaw: gy, top: best.top, supportId: best.o.id, snapped: false }, kind, heldY, others);
+    return finish({ x, z, y, yaw: gy, top: best.top, supportId: best.o.id, snapped: false }, kind, heldY, others);
   }
 
   // Flat top: copy the support's orientation and pull onto its half-cube grid.
@@ -131,11 +131,66 @@ export function computeCarry(input: CarryInput): CarryResult {
   const snapX = Math.abs(lx - gx) < range, snapZ = Math.abs(lz - gz) < range;
   if (snapX) lx = gx;
   if (snapZ) lz = gz;
-  return separate({
+  return finish({
     x: o.x + c * lx + s * lz,
     z: o.z - s * lx + c * lz,
     y, yaw, top: best.top, supportId: o.id, snapped: snapX && snapZ,
   }, kind, heldY, others);
+}
+
+function finish(r: CarryResult, kind: ShapeKind, heldY: number, others: Other[]): CarryResult {
+  return clampArena(separate(r, kind, heldY, others), kind);
+}
+
+/** Keep the whole footprint inside the play area (a flat camera angle can aim the finger far beyond the rug). */
+export function clampArena(r: CarryResult, kind: ShapeKind): CarryResult {
+  const [hx, , hz] = halfExtents(kind);
+  const c = Math.abs(Math.cos(r.yaw)), s = Math.abs(Math.sin(r.yaw));
+  const fx = c * hx + s * hz, fz = s * hx + c * hz;
+  const d = Math.hypot(r.x, r.z);
+  if (d < 1e-6) return r;
+  const reach = fx * (Math.abs(r.x) / d) + fz * (Math.abs(r.z) / d); // footprint extent towards the wall
+  const limit = Math.max(0, PLAY_AREA - ARENA_MARGIN - reach);
+  if (d <= limit) return r;
+  const k = limit / d;
+  return { ...r, x: r.x * k, z: r.z * k, snapped: false };
+}
+
+export interface Pick { id: number; x: number; z: number; top: number }
+
+/**
+ * What is the finger pointing at? Casts the view ray through the bounding boxes of the other blocks and
+ * returns the nearest one hit, with the spot of its top face the finger is aiming at (clamped onto the face
+ * when the ray enters through the side). This is the "intent": pointing at a tower means "put it up there".
+ */
+export function pickBlock(
+  ox: number, oy: number, oz: number, dx: number, dy: number, dz: number,
+  others: Other[], heldY: number, maxT = Infinity,
+): Pick | null {
+  if (dy >= -1e-6) return null; // the view ray always points down at the playroom
+  let best: { o: Other; t: number; ax: number; ay: number; az: number } | null = null;
+  for (const o of others) {
+    const [ax, ay, az] = worldHalf(o.kind, o.q);
+    if (o.y - ay >= heldY) continue; // sits on / above the carried block
+    let t0 = 0, t1 = Infinity;
+    const slab = (p: number, d: number, c: number, h: number) => {
+      if (Math.abs(d) < 1e-9) return p >= c - h && p <= c + h;
+      let a = (c - h - p) / d, b = (c + h - p) / d;
+      if (a > b) { const tmp = a; a = b; b = tmp; }
+      t0 = Math.max(t0, a); t1 = Math.min(t1, b);
+      return t0 <= t1;
+    };
+    if (!slab(ox, dx, o.x, ax) || !slab(oy, dy, o.y, ay) || !slab(oz, dz, o.z, az)) continue;
+    if (t0 > maxT) continue; // only blocks the finger sees BEFORE the floor point it would otherwise aim at
+    if (!best || t0 < best.t) best = { o, t: t0, ax, ay, az };
+  }
+  if (!best) return null;
+  const { o, ax, ay, az } = best;
+  const top = o.y + ay;
+  const tt = (top - oy) / dy;
+  const px = Math.min(o.x + ax, Math.max(o.x - ax, ox + dx * tt));
+  const pz = Math.min(o.z + az, Math.max(o.z - az, oz + dz * tt));
+  return { id: o.id, x: px, z: pz, top };
 }
 
 /**
