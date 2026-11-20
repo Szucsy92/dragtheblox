@@ -235,6 +235,15 @@ function AutoFrame({ controls, drag, orbiting }: {
   return null;
 }
 
+/** Hands the camera and the canvas to the dev-only handle below (never used for gameplay). */
+function CamProbe({ probe }: { probe: React.MutableRefObject<{ camera: THREE.Camera; gl: THREE.WebGLRenderer } | null> }) {
+  const { camera, gl } = useThree();
+  useEffect(() => {
+    probe.current = { camera, gl };
+  }, [camera, gl, probe]);
+  return null;
+}
+
 export default function Playroom() {
   const [blocks, setBlocks] = useState<BlockData[]>([]);
   const [colorIdx, setColorIdx] = useState(0);
@@ -249,6 +258,7 @@ export default function Playroom() {
   const trashEl = useRef<HTMLButtonElement>(null);
   const nextId = useRef(1);
   const touches = useRef(new Set<number>());
+  const probe = useRef<{ camera: THREE.Camera; gl: THREE.WebGLRenderer } | null>(null);
 
   const overTrash = (x: number, y: number) => {
     const r = trashEl.current?.getBoundingClientRect();
@@ -441,6 +451,56 @@ export default function Playroom() {
     sfx.clear();
   };
 
+  // Dev-only handle (dropped from the built app): lets a scripted check read the room, drive it and
+  // aim the pointer exactly, so the carry/stack flow can be verified instead of assumed.
+  const devApi = useMemo(() => ({}) as Record<string, any>, []);
+  useEffect(() => {
+    if (!import.meta.env.DEV) return;
+    const project = (x: number, y: number, z: number) => {
+      const p = probe.current;
+      if (!p) return null;
+      const v = new THREE.Vector3(x, y, z).project(p.camera);
+      const r = p.gl.domElement.getBoundingClientRect();
+      return { x: r.left + (v.x * 0.5 + 0.5) * r.width, y: r.top + (-v.y * 0.5 + 0.5) * r.height };
+    };
+    const pose = (id: number) => {
+      const b = bodies.get(id), k = kinds.get(id);
+      if (!b || !k) return null;
+      const t = b.translation(), q = b.rotation();
+      return { t, q, k };
+    };
+    Object.assign(devApi, {
+      blocks: () => snapshot(),
+      spawn,
+      clear: clearAll,
+      turn: turnHeld,
+      towerHeight: () => {
+        let H = 0;
+        bodies.forEach((b, id) => {
+          const k = kinds.get(id);
+          if (!k) return;
+          const t = b.translation(), q = b.rotation();
+          H = Math.max(H, t.y + worldHalf(k, q)[1]);
+        });
+        return H;
+      },
+      cameraInfo: () => {
+        const p = probe.current, ctl = controls.current;
+        if (!p || !ctl) return null;
+        return { dist: p.camera.position.distanceTo(ctl.target), targetY: ctl.target.y };
+      },
+      screenPos: (id: number) => {
+        const p = pose(id);
+        return p ? project(p.t.x, p.t.y, p.t.z) : null;
+      },
+      screenTop: (id: number) => {
+        const p = pose(id);
+        return p ? project(p.t.x, p.t.y + worldHalf(p.k, p.q)[1], p.t.z) : null;
+      },
+    });
+    (window as any).__game = devApi;
+  });
+
   const nextColor = TOY_COLORS[colorIdx % TOY_COLORS.length]!;
 
   return (
@@ -481,6 +541,7 @@ export default function Playroom() {
         </Suspense>
         <ContactShadows position={[0, RUG_H + 0.004, 0]} opacity={0.55} scale={16} blur={2.5} far={4} />
         <DragController drag={drag} />
+        <CamProbe probe={probe} />
         <Keeper />
         <AutoFrame controls={controls} drag={drag} orbiting={orbiting} />
         <OrbitControls
