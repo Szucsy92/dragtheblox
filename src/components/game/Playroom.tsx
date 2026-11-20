@@ -3,11 +3,11 @@ import * as THREE from "three";
 import { Canvas, useFrame, useThree, type ThreeEvent } from "@react-three/fiber";
 import { Environment, Lightformer, OrbitControls, ContactShadows } from "@react-three/drei";
 import { Physics } from "@react-three/rapier";
-import { Trash2, Sparkles, Smartphone, SmartphoneNfc, RotateCw } from "lucide-react";
+import { Trash2, RotateCw } from "lucide-react";
 import {
   SHAPES, TOY_COLORS, shapeDef, halfExtents, type BlockData, type ShapeKind,
   GRAVITY, CARRY_GAIN, CARRY_MAX, ROT_GAIN, ROT_MAX, THROW_MIN, THROW_MAX,
-  SHAKE_THRESHOLD, SHAKE_IMPULSE, RUG_H, DRAG_LIFT, PLAY_AREA,
+  RUG_H, DRAG_LIFT, PLAY_AREA,
 } from "@/game/shapes";
 import { computeCarry, overlapsOther, pickBlock, pickSpawn, worldHalf, HALF_PI } from "@/game/placement";
 import { bodies, kinds, snapshot, setCarried } from "@/game/registry";
@@ -249,8 +249,6 @@ export default function Playroom() {
   const [colorIdx, setColorIdx] = useState(0);
   const [activeId, setActiveId] = useState<number | null>(null);
   const [trashHot, setTrashHot] = useState(false);
-  const [notice, setNotice] = useState("");
-  const [shakeOn, setShakeOn] = useState(false);
   const [ready, setReady] = useState(false);
   const drag = useRef<DragState | null>(null);
   const controls = useRef<any>(null);
@@ -263,12 +261,11 @@ export default function Playroom() {
   const overTrash = (x: number, y: number) => {
     const r = trashEl.current?.getBoundingClientRect();
     if (!r) return false;
-    const pad = 16;
+    const pad = 28;
     return x > r.left - pad && x < r.right + pad && y > r.top - pad && y < r.bottom + pad;
   };
 
   const spawn = (kind: ShapeKind) => {
-    setNotice("");
     unlockAudio();
     const color = TOY_COLORS[colorIdx % TOY_COLORS.length]!;
     setColorIdx((i) => i + 1);
@@ -287,7 +284,6 @@ export default function Playroom() {
     const body = bodies.get(d.id);
     if (overTrash(x, y)) {
       setBlocks((b) => b.filter((bl) => bl.id !== d.id));
-      setNotice("A kocka a kukába került!");
       sfx.trash();
       return;
     }
@@ -340,7 +336,6 @@ export default function Playroom() {
     if (drag.current) return;
     const body = bodies.get(id);
     if (!body) return;
-    setNotice("");
     unlockAudio();
     setCarried(body, true); // carried: dynamic, floats, collides only with the ground
     drag.current = { id, pointerId: e.pointerId, x: e.clientX, y: e.clientY, offX: 0, offZ: 0, started: false, x0: e.clientX, y0: e.clientY, last: null, sticky: null, yaw: 0 };
@@ -391,65 +386,6 @@ export default function Playroom() {
       window.removeEventListener("pointercancel", up);
     };
   }, [release]);
-
-  // Shaking the phone
-  const shake = useCallback((ax: number, ay: number, az: number) => {
-    bodies.forEach((b, id) => {
-      if (drag.current?.id === id) return;
-      const m = b.mass();
-      b.applyImpulse({ x: ax * m * SHAKE_IMPULSE, y: Math.abs(ay) * m * SHAKE_IMPULSE + m * 0.4, z: az * m * SHAKE_IMPULSE }, true);
-      b.applyTorqueImpulse({ x: (Math.random() - 0.5) * m * 0.3, y: (Math.random() - 0.5) * m * 0.3, z: (Math.random() - 0.5) * m * 0.3 }, true);
-    });
-  }, []);
-
-  useEffect(() => {
-    if (!shakeOn) return;
-    let last = 0;
-    const onMotion = (e: DeviceMotionEvent) => {
-      const a = e.acceleration;
-      if (!a || a.x == null) return;
-      const mag = Math.hypot(a.x ?? 0, a.y ?? 0, a.z ?? 0);
-      const now = performance.now();
-      if (mag < SHAKE_THRESHOLD || now - last < 90) return;
-      last = now;
-      shake((a.x ?? 0) * 0.6, (a.y ?? 0) * 0.6, -(a.z ?? 0) * 0.6);
-    };
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "r" || e.key === "R") shake((Math.random() - 0.5) * 30, 15, (Math.random() - 0.5) * 30);
-    };
-    window.addEventListener("devicemotion", onMotion);
-    window.addEventListener("keydown", onKey);
-    return () => {
-      window.removeEventListener("devicemotion", onMotion);
-      window.removeEventListener("keydown", onKey);
-    };
-  }, [shakeOn, shake]);
-
-  const toggleShake = async () => {
-    unlockAudio();
-    sfx.click();
-    if (!shakeOn) {
-      const DM = (window as any).DeviceMotionEvent;
-      if (DM && typeof DM.requestPermission === "function") {
-        try {
-          const res = await DM.requestPermission();
-          if (res !== "granted") return;
-        } catch {
-          return;
-        }
-      }
-    }
-    setShakeOn((s) => !s);
-  };
-
-  const clearAll = () => {
-    if (!blocks.length) return;
-    drag.current = null;
-    setActiveId(null);
-    setBlocks([]);
-    setNotice("Minden kocka eltűnt!");
-    sfx.clear();
-  };
 
   // Dev-only handle (dropped from the built app): lets a scripted check read the room, drive it and
   // aim the pointer exactly, so the carry/stack flow can be verified instead of assumed.
@@ -562,87 +498,57 @@ export default function Playroom() {
         />
       </Canvas>
 
-      {/* Top bar: below the status bar */}
-      <div className="pointer-events-none absolute inset-x-0 top-0 flex items-start justify-between gap-2 px-3"
-        style={{ paddingTop: "calc(env(safe-area-inset-top) + 10px)" }}>
-        <div className="pointer-events-auto rounded-full bg-card/85 px-4 py-2 font-display text-lg font-bold text-card-foreground shadow-toy backdrop-blur">
-          Kockavár
-        </div>
-        <div className="pointer-events-auto flex gap-2">
-          <button
-            onClick={toggleShake}
-            aria-pressed={shakeOn}
-            aria-label="Rázás be/ki"
-            className={`flex h-11 items-center gap-1.5 rounded-full px-4 font-display text-sm font-bold shadow-toy backdrop-blur transition-transform active:scale-95 ${shakeOn ? "bg-primary text-primary-foreground" : "bg-card/85 text-card-foreground"}`}
-          >
-            {shakeOn ? <SmartphoneNfc className="h-5 w-5" /> : <Smartphone className="h-5 w-5" />}
-            Rázás {shakeOn ? "be" : "ki"}
-          </button>
-          <button
-            onClick={clearAll}
-            aria-label="Minden törlése"
-            className="flex min-h-14 items-center gap-2 rounded-full bg-card/85 px-4 font-display text-base font-bold text-card-foreground shadow-toy backdrop-blur transition-transform active:scale-95"
-          >
-            <Sparkles className="h-5 w-5" /> Mind el
-          </button>
-        </div>
-      </div>
-
-      {/* Rotate the carried block by 90° (second finger while carrying, or the E key) */}
-      {activeId !== null && (
+      {/* Carry actions: only visible while a block is being dragged, small and quiet */}
+      <div
+        className="pointer-events-none absolute inset-x-0 flex items-end justify-between px-4"
+        style={{ bottom: "calc(env(safe-area-inset-bottom) + 84px)" }}
+      >
         <button
           data-keep-drag
+          tabIndex={-1}
+          aria-hidden={activeId === null}
           onPointerDown={(e) => { e.stopPropagation(); turnHeld(); }}
           aria-label="Elem forgatása"
-          className="absolute left-3 flex h-24 w-24 flex-col items-center justify-center gap-1 rounded-3xl border-2 border-primary/60 bg-card text-primary shadow-toy transition-transform active:scale-95"
-          style={{ bottom: "calc(env(safe-area-inset-bottom) + 126px)" }}
+          className={`flex h-14 w-14 items-center justify-center rounded-full border border-white/15 bg-white/10 text-white/80 backdrop-blur transition-all duration-150 active:scale-90 ${
+            activeId !== null ? "pointer-events-auto scale-100 opacity-100" : "scale-75 opacity-0"
+          }`}
         >
-          <RotateCw className="h-11 w-11" />
-          <span className="font-display text-sm font-extrabold">FORGAT</span>
+          <RotateCw className="h-6 w-6" />
         </button>
-      )}
+        <button
+          ref={trashEl}
+          tabIndex={-1}
+          aria-hidden={activeId === null}
+          aria-label="Kuka: ide húzd a törlendő elemet"
+          className={`flex h-14 w-14 items-center justify-center rounded-full border backdrop-blur transition-all duration-150 ${
+            activeId === null
+              ? "scale-75 border-white/15 bg-white/10 text-white/70 opacity-0"
+              : trashHot
+                ? "scale-125 border-destructive bg-destructive text-white opacity-100"
+                : "scale-100 border-white/15 bg-white/10 text-white/70 opacity-100"
+          }`}
+        >
+          <Trash2 className="h-6 w-6" />
+        </button>
+      </div>
 
-      {/* Trash */}
-      <button
-        ref={trashEl}
-        aria-label="Kuka: ide húzd a törlendő elemet"
-        className={`absolute right-3 flex h-24 w-24 flex-col items-center justify-center gap-1 rounded-3xl border-2 shadow-toy transition-all ${
-          trashHot ? "scale-110 border-destructive bg-destructive text-destructive-foreground" : activeId ? "scale-105 border-destructive/50 bg-card text-destructive" : "border-border bg-card/90 text-muted-foreground"
-        }`}
-        style={{ bottom: "calc(env(safe-area-inset-bottom) + 126px)" }}
-      >
-        <Trash2 className="h-11 w-11" />
-        <span className="font-display text-sm font-extrabold">KUKA</span>
-      </button>
-
-      {notice && (
-        <div role="status" className="pointer-events-none absolute left-1/2 top-20 -translate-x-1/2 rounded-full bg-card/95 px-5 py-3 text-center font-display text-base font-bold text-card-foreground shadow-toy backdrop-blur">
-          {notice}
-        </div>
-      )}
-
-      {/* Hint */}
       {blocks.length === 0 && (
-        <div className="pointer-events-none absolute inset-x-0 top-1/3 text-center font-display text-xl font-bold text-white/90 drop-shadow">
+        <div className="pointer-events-none absolute inset-x-0 top-1/3 text-center font-display text-xl font-bold text-white/80 drop-shadow">
           Koppints egy elemre lent!
-          <div className="mt-1 text-sm font-semibold text-white/70">
-            Egy ujj: emelés, építés, dobás · Közben másik ujj a FORGAT gombon · Két ujj üresen: nézet
-          </div>
         </div>
       )}
 
-      {/* Shape tray */}
-      <div className="absolute inset-x-0 bottom-0 px-2" style={{ paddingBottom: "calc(env(safe-area-inset-bottom) + 10px)" }}>
-        <div className="mx-auto flex max-w-xl gap-1.5 overflow-x-auto rounded-3xl bg-card/85 p-2 shadow-toy backdrop-blur">
+      {/* Shape tray: low, the icons fill its height */}
+      <div className="absolute inset-x-0 bottom-0 px-2" style={{ paddingBottom: "calc(env(safe-area-inset-bottom) + 8px)" }}>
+        <div className="mx-auto flex max-w-xl overflow-x-auto rounded-2xl bg-card/85 p-1.5 shadow-toy backdrop-blur">
           {SHAPES.map((s) => (
             <button
               key={s.kind}
               onClick={() => spawn(s.kind)}
               aria-label={s.label}
-              className="flex min-w-[78px] min-h-[88px] flex-1 flex-col items-center justify-center gap-1 rounded-2xl px-2 py-2 transition-transform hover:bg-muted active:scale-95"
+              className="flex h-[52px] min-w-11 flex-1 items-center justify-center rounded-xl transition-transform hover:bg-muted active:scale-90"
             >
-              <ShapeIcon kind={s.kind} color={nextColor} />
-              <span className="font-display text-xs font-extrabold text-card-foreground">{s.label}</span>
+              <ShapeIcon kind={s.kind} color={nextColor} className="h-full w-full" />
             </button>
           ))}
         </div>

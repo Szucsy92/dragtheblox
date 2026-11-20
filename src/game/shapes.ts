@@ -87,8 +87,6 @@ export const ROT_GAIN = 14; // 1/s: how fast a carried block turns to its target
 export const ROT_MAX = 14; // rad/s
 export const THROW_MIN = 6; // u/s: slower than this on release = gentle place, faster = throw
 export const THROW_MAX = 10;
-export const SHAKE_THRESHOLD = 9; // m/s² of user acceleration
-export const SHAKE_IMPULSE = 0.045 * SIZE_RATIO;
 
 // ---- Smart building ----
 /** Fraction of the carried block's footprint that must be over another block to count as "on top of it". */

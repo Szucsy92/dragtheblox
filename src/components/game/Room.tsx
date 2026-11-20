@@ -3,30 +3,6 @@ import * as THREE from "three";
 import { RigidBody, CuboidCollider } from "@react-three/rapier";
 import { GROUP_GROUND, PLAY_AREA, RUG_H } from "@/game/shapes";
 
-function floorTexture() {
-  const c = document.createElement("canvas");
-  c.width = c.height = 1024;
-  const g = c.getContext("2d")!;
-  // wooden planks
-  const planks = ["#2d2430", "#2a2230", "#322835", "#261f2c"];
-  for (let i = 0; i < 8; i++) {
-    g.fillStyle = planks[i % 4]!;
-    g.fillRect(0, i * 128, 1024, 128);
-    g.fillStyle = "rgba(0,0,0,0.45)";
-    g.fillRect(0, i * 128, 1024, 3);
-    for (let k = 0; k < 40; k++) {
-      g.fillStyle = `rgba(255,255,255,${Math.random() * 0.035})`;
-      g.fillRect(Math.random() * 1024, i * 128 + Math.random() * 128, 80 + Math.random() * 200, 2);
-    }
-  }
-  const t = new THREE.CanvasTexture(c);
-  t.wrapS = t.wrapT = THREE.RepeatWrapping;
-  t.repeat.set(4, 4);
-  t.colorSpace = THREE.SRGBColorSpace;
-  t.anisotropy = 8;
-  return t;
-}
-
 function rugTexture() {
   const c = document.createElement("canvas");
   c.width = c.height = 1024;
@@ -53,28 +29,28 @@ function rugTexture() {
 }
 
 export function Room() {
-  const floor = useMemo(floorTexture, []);
   const rug = useMemo(rugTexture, []);
   const W = PLAY_AREA;
   return (
     <>
-      <mesh rotation-x={-Math.PI / 2} receiveShadow userData={{ surface: true }}>
-        <circleGeometry args={[W + 1.25, 96]} />
-        <meshStandardMaterial map={floor} roughness={0.7} />
-      </mesh>
-      {/* The rug is a real slab of thickness RUG_H; the physics ground is exactly its top face. */}
+      {/* The rug IS the play space: same radius as the walls, and a slab of thickness RUG_H whose top face is the physics ground. */}
       <mesh position-y={RUG_H / 2} receiveShadow userData={{ surface: true }}>
         <cylinderGeometry args={[W, W, RUG_H, 96]} />
         <meshStandardMaterial attach="material-0" color="#141830" roughness={0.95} />
         <meshStandardMaterial attach="material-1" map={rug} roughness={0.95} />
         <meshStandardMaterial attach="material-2" color="#141830" roughness={0.95} />
       </mesh>
+      {/* Low rim so the edge of the space reads clearly */}
+      <mesh position-y={RUG_H + 0.14}>
+        <cylinderGeometry args={[W + 0.16, W + 0.16, 0.28, 96, 1, true]} />
+        <meshStandardMaterial color="#323a6a" roughness={0.8} side={THREE.DoubleSide} />
+      </mesh>
       <RigidBody type="fixed" colliders={false} friction={1} restitution={0} collisionGroups={GROUP_GROUND}>
         <CuboidCollider args={[30, 0.5, 30]} position={[0, RUG_H - 0.5, 0]} />
-        {/* A smooth-enough circular boundary made from short tangential wall segments (inner face inside the rug edge). */}
+        {/* Circular boundary from short tangential wall segments: the inner face is exactly the rug edge. */}
         {Array.from({ length: 64 }, (_, i) => {
           const a = (i / 64) * Math.PI * 2;
-          const r = W + 0.12;
+          const r = W + 0.16;
           return (
             <CuboidCollider
               key={i}

@@ -79,9 +79,5 @@ export const sfx = {
     tone(400, 0.25, 0.2, "square", -320);
     noise(0.2, 0.3, 900);
   },
-  clear: () => {
-    tone(660, 0.12, 0.2, "triangle", -200);
-    setTimeout(() => tone(440, 0.2, 0.2, "triangle", -200), 90);
-  },
   click: () => tone(900, 0.04, 0.1, "sine"),
 };
