@@ -32,3 +32,5 @@ use the editor.
 ## Project rules
 - Game rules/constants live in `src/game/*` (no React); the 3D scene in `src/components/game/*` only draws and wires input. Why: keeps physics feel tunable via named constants.
 - Live physics bodies are tracked in `src/game/registry.ts`, not React state. Why: drag/shake touch bodies every frame without re-rendering.
+- Held bodies retain collisions and use acceleration-limited impulses; supported blocks are never parented or teleported. Why: friction transports stacks while inertia and impacts can topple them.
+- Dev-only `window.__game` exposes snapshots, spawn/clear, screen projections and physics probes; keep these hooks behind DEV. Why: browser checks must use the live physics world rather than duplicate module instances.

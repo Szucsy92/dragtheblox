@@ -7,7 +7,7 @@ export const bodies = new Map<number, RapierRigidBody>();
 // What kind of block each id is (needed for sizes while carrying).
 export const kinds = new Map<number, ShapeKind>();
 
-/** Start / stop carrying: gravity off and no collisions with other blocks while carried. */
+/** The hand supports the selected body; contact with all other bodies stays enabled. */
 export function setCarried(body: RapierRigidBody, carried: boolean) {
   body.setGravityScale(carried ? 0 : 1, true);
   for (let i = 0; i < body.numColliders(); i++) {

@@ -54,7 +54,7 @@ export function Room() {
           return (
             <CuboidCollider
               key={i}
-              args={[0.34, 8, 0.16]}
+              args={[(W + 0.32) * Math.tan(Math.PI / 64), 8, 0.16]}
               position={[Math.cos(a) * r, 8, Math.sin(a) * r]}
               rotation={[0, -a + Math.PI / 2, 0]}
               friction={0.1}

@@ -64,13 +64,13 @@ export interface BlockData {
 }
 
 // ---- Collision groups: (membership << 16) | filter ----
-// The carried block only collides with the ground and walls, never with other blocks: it cannot shove anything.
+// Held blocks remain physical participants so friction carries stacks and impacts transfer momentum.
 export const GROUP_BLOCK = 0x00010005; // blocks: collide with blocks + ground
-export const GROUP_HELD = 0x00020004; // carried block: ground + walls only
+export const GROUP_HELD = GROUP_BLOCK;
 export const GROUP_GROUND = 0x0004ffff; // rug and walls: collide with everything
 
 // ---- World ----
-export const PLAY_AREA = 6.2; // radius of the circular play area (the rug)
+export const PLAY_AREA = 12.4; // twice the original 6.2 radius
 /** The rug has real thickness: this is the height of the walkable ground, visuals and physics agree. */
 export const RUG_H = 0.05;
 /** Carried blocks are kept at least this far inside the rim (the wall colliders start at PLAY_AREA - 0.04). */
@@ -85,8 +85,8 @@ export const CARRY_GAIN = 14; // 1/s: how eagerly a carried block follows the fi
 export const CARRY_MAX = 14; // u/s: cap, so a carried block cannot fire the others away
 export const ROT_GAIN = 14; // 1/s: how fast a carried block turns to its target yaw
 export const ROT_MAX = 14; // rad/s
-export const THROW_MIN = 6; // u/s: slower than this on release = gentle place, faster = throw
-export const THROW_MAX = 10;
+export const THROW_MIN = 3; // recent gesture speed: slower = place, faster = throw
+export const THROW_MAX = 24;
 
 // ---- Smart building ----
 /** Fraction of the carried block's footprint that must be over another block to count as "on top of it". */

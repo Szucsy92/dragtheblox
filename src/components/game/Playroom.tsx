@@ -6,10 +6,11 @@ import { Physics } from "@react-three/rapier";
 import { Trash2, RotateCw } from "lucide-react";
 import {
   SHAPES, TOY_COLORS, shapeDef, halfExtents, type BlockData, type ShapeKind,
-  GRAVITY, CARRY_GAIN, CARRY_MAX, ROT_GAIN, ROT_MAX, THROW_MIN, THROW_MAX,
+  GRAVITY, ROT_GAIN, ROT_MAX, THROW_MIN,
   RUG_H, DRAG_LIFT, PLAY_AREA,
 } from "@/game/shapes";
-import { computeCarry, overlapsOther, pickBlock, pickSpawn, worldHalf, HALF_PI } from "@/game/placement";
+import { clampArena, computeCarry, pickBlock, pickSpawn, worldHalf, HALF_PI } from "@/game/placement";
+import { carryImpulse, gestureVelocity, supportedAbove, throwVelocity, type MotionSample } from "@/game/manipulation";
 import { bodies, kinds, snapshot, setCarried } from "@/game/registry";
 import { sfx, unlockAudio } from "@/game/audio";
 import { Block } from "./Block";
@@ -33,6 +34,9 @@ interface DragState {
   sticky: number | null;
   /** Preferred yaw; the player turns it with the rotate button. */
   yaw: number;
+  load: number[];
+  carryY: number;
+  samples: MotionSample[];
 }
 
 const tmpV = new THREE.Vector3();
@@ -62,7 +66,7 @@ function DragController({ drag }: { drag: React.MutableRefObject<DragState | nul
     [],
   );
 
-  useFrame(() => {
+  useFrame((_, delta) => {
     const rect = rectRef.current, round = roundRef.current;
     const hide = () => { if (rect) rect.visible = false; if (round) round.visible = false; };
     const d = drag.current;
@@ -77,7 +81,7 @@ function DragController({ drag }: { drag: React.MutableRefObject<DragState | nul
     // Floor aim: the finger ray meets a FIXED plane (carry height above the rug), so lifting the block can never
     // feed back into where it is aiming.
     const [, hyHeld] = halfExtents(kind);
-    plane.constant = -(RUG_H + hyHeld + DRAG_LIFT);
+    plane.constant = -(d.load.length ? d.carryY : RUG_H + hyHeld + DRAG_LIFT);
     const hit = ray.ray.intersectPlane(plane, tmpV);
     const others = snapshot(d.id);
     // Intent: if the finger points AT another block (a tower image on screen), aim at its top, so the carried
@@ -86,7 +90,9 @@ function DragController({ drag }: { drag: React.MutableRefObject<DragState | nul
     // Not on the first touch (a block behind the one just grabbed must not steal it), and only what is in
     // front of the floor point.
     const moved = Math.hypot(d.x - d.x0, d.y - d.y0) > 14;
-    const pick = moved
+    const gesture = gestureVelocity(d.samples, performance.now());
+    const fast = Math.hypot(gesture.x, gesture.z) >= THROW_MIN;
+    const pick = moved && !fast && d.load.length === 0
       ? pickBlock(o.x, o.y, o.z, dir.x, dir.y, dir.z, others, t.y, hit ? hit.distanceTo(o) : Infinity)
       : null;
     if (!hit && !pick) return hide();
@@ -105,19 +111,28 @@ function DragController({ drag }: { drag: React.MutableRefObject<DragState | nul
     }
 
     if (!d.started) return hide();
-    const aimX = pick ? pick.x : hit!.x + d.offX;
-    const aimZ = pick ? pick.z : hit!.z + d.offZ;
-    const res = computeCarry({
-      kind, x: aimX, z: aimZ, yaw: d.yaw, heldY: t.y, stickyId: pick ? pick.id : d.sticky, others,
-    });
+    const aimX = pick ? pick.x : (hit?.x ?? t.x) + d.offX;
+    const aimZ = pick ? pick.z : (hit?.z ?? t.z) + d.offZ;
+    const res = fast || d.load.length > 0
+      ? clampArena({ x: aimX, z: aimZ, y: d.load.length ? d.carryY + 0.08 : Math.max(d.carryY, RUG_H + hyHeld + DRAG_LIFT), yaw: d.yaw, top: RUG_H, supportId: null, snapped: false }, kind)
+      : computeCarry({
+          kind, x: aimX, z: aimZ, yaw: d.yaw, heldY: t.y, stickyId: pick ? pick.id : d.sticky, others: others.filter(o => !d.load.includes(o.id)),
+        });
     d.last = { x: res.x, y: res.y, z: res.z, yaw: res.yaw };
     d.sticky = res.supportId;
 
-    // Position: steer by velocity (clamped), never teleport.
-    let vx = (res.x - t.x) * CARRY_GAIN, vy = (res.y - t.y) * CARRY_GAIN, vz = (res.z - t.z) * CARRY_GAIN;
-    const sp = Math.hypot(vx, vy, vz);
-    if (sp > CARRY_MAX) { const k = CARRY_MAX / sp; vx *= k; vy *= k; vz *= k; }
-    body.setLinvel({ x: vx, y: vy, z: vz }, true);
+    // A real hand force: contacts/friction move the passengers, never copying their positions.
+    const impulse = carryImpulse({ x: res.x - t.x, y: res.y - t.y, z: res.z - t.z }, body.linvel(), delta, fast, body.mass());
+    // Support the load's weight like a hand underneath it, without forcing its horizontal motion.
+    let loadMass = 0;
+    const contacts = supportedAbove({ id: d.id, kind, x: t.x, y: t.y, z: t.z, q: body.rotation() }, others);
+    for (const id of d.load) {
+      const passenger = bodies.get(id);
+      if (passenger && contacts.includes(id)) loadMass += passenger.mass();
+    }
+    impulse.y += loadMass * GRAVITY * Math.min(delta, 0.05);
+    body.applyImpulse(impulse, true);
+    for (const id of d.load) bodies.get(id)?.wakeUp();
 
     // Orientation: turn upright and to the target yaw by angular velocity along the shortest path.
     const r = body.rotation();
@@ -299,26 +314,13 @@ export default function Playroom() {
     }
     if (body) {
       setCarried(body, false);
-      // The carried block does not collide with others, so if it is still on its way (overlapping something)
-      // put it on its computed spot first: no pop-out when the physics wakes up.
-      const k = kinds.get(d.id);
-      const t0 = body.translation();
-      if (k && d.last && overlapsOther(k, t0.x, t0.y, t0.z, d.last.yaw, snapshot(d.id))) {
-        body.setTranslation({ x: d.last.x, y: d.last.y, z: d.last.z }, true);
-      }
-      const lv = body.linvel();
-      const speed = Math.hypot(lv.x, lv.z);
-      if (speed > THROW_MIN) {
-        // Throw: keep the carried velocity, add a little arc, cap it.
-        const v = new THREE.Vector3(lv.x, Math.max(0, lv.y), lv.z);
-        v.y += Math.min(1.7, speed * 0.12);
-        if (v.length() > THROW_MAX) v.setLength(THROW_MAX);
+      const v = throwVelocity(gestureVelocity(d.samples, performance.now()));
+      if (v) {
         body.setLinvel(v, true);
         body.setAngvel({ x: v.z * 0.3, y: 0, z: -v.x * 0.3 }, true);
       } else {
-        // Gentle place: no leftover sliding or spinning, it just settles.
-        body.setLinvel({ x: 0, y: 0, z: 0 }, true);
-        body.setAngvel({ x: 0, y: 0, z: 0 }, true);
+        // Keep physical momentum on release; gravity settles the block without teleporting.
+        body.wakeUp();
       }
     }
     sfx.drop();
@@ -347,8 +349,12 @@ export default function Playroom() {
     const body = bodies.get(id);
     if (!body) return;
     unlockAudio();
-    setCarried(body, true); // carried: dynamic, floats, collides only with the ground
-    drag.current = { id, pointerId: e.pointerId, x: e.clientX, y: e.clientY, offX: 0, offZ: 0, started: false, x0: e.clientX, y0: e.clientY, last: null, sticky: null, yaw: 0 };
+    const all = snapshot();
+    const base = all.find(o => o.id === id);
+    const load = base ? supportedAbove(base, all) : [];
+    const carryY = body.translation().y;
+    setCarried(body, true);
+    drag.current = { id, pointerId: e.pointerId, x: e.clientX, y: e.clientY, offX: 0, offZ: 0, started: false, x0: e.clientX, y0: e.clientY, last: null, sticky: null, yaw: 0, load, carryY, samples: [] };
     setActiveId(id);
     sfx.pick();
   }, []);
@@ -377,6 +383,19 @@ export default function Playroom() {
       if (!d || e.pointerId !== d.pointerId) return;
       d.x = e.clientX;
       d.y = e.clientY;
+      const p = probe.current;
+      if (p) {
+        const r = p.gl.domElement.getBoundingClientRect();
+        const pointer = new THREE.Vector2((e.clientX - r.left) / r.width * 2 - 1, -(e.clientY - r.top) / r.height * 2 + 1);
+        const raycaster = new THREE.Raycaster();
+        raycaster.setFromCamera(pointer, p.camera);
+        const point = raycaster.ray.intersectPlane(new THREE.Plane(UP, -d.carryY), new THREE.Vector3());
+        if (point) {
+          const time = performance.now();
+          d.samples.push({ time, x: point.x, z: point.z });
+          d.samples = d.samples.filter(s => time - s.time <= 160);
+        }
+      }
       const hot = overTrash(e.clientX, e.clientY);
       setTrashHot((h) => (h === hot ? h : hot));
     };
@@ -420,6 +439,17 @@ export default function Playroom() {
       spawn,
       clear: clearAll,
       turn: turnHeld,
+      dragState: () => drag.current,
+      velocity: (id: number) => bodies.get(id)?.linvel(),
+      setPose: (id: number, x: number, y: number, z: number) => {
+        const b = bodies.get(id);
+        if (!b) return;
+        b.setTranslation({ x, y, z }, true);
+        b.setRotation({ x: 0, y: 0, z: 0, w: 1 }, true);
+        b.setLinvel({ x: 0, y: 0, z: 0 }, true);
+        b.setAngvel({ x: 0, y: 0, z: 0 }, true);
+      },
+      project,
       towerHeight: () => {
         let H = 0;
         bodies.forEach((b, id) => {
@@ -454,12 +484,12 @@ export default function Playroom() {
       <Canvas
         shadows
         dpr={[1, 2]}
-        camera={{ position: [9, 9, 14], fov: 45 }}
+        camera={{ position: [14, 14, 22], fov: 45 }}
         onCreated={() => setTimeout(() => setReady(true), 300)}
         style={{ position: "absolute", inset: 0 }}
       >
         <color attach="background" args={["#0e1222"]} />
-        <fog attach="fog" args={["#0e1222", 22, 50]} />
+        <fog attach="fog" args={["#0e1222", 40, 85]} />
         <hemisphereLight args={["#cfd8ff", "#3a2f4a", 0.7]} />
         <directionalLight
           position={[6, 12, 5]}

@@ -168,6 +168,7 @@ export const Block = memo(function Block({ data, onGrab, active }: Props) {
         else { bodies.delete(id); kinds.delete(id); }
       }}
       position={data.spawn}
+      ccd
       colliders={colliders}
       friction={0.9}
       restitution={0}
