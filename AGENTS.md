@@ -32,5 +32,6 @@ use the editor.
 ## Project rules
 - Game rules/constants live in `src/game/*` (no React); the 3D scene in `src/components/game/*` only draws and wires input. Why: keeps physics feel tunable via named constants.
 - Live physics bodies are tracked in `src/game/registry.ts`, not React state. Why: drag/shake touch bodies every frame without re-rendering.
-- Held bodies retain collisions and use acceleration-limited impulses; supported blocks are never parented or teleported. Why: friction transports stacks while inertia and impacts can topple them.
+- The carried block is a dynamic body steered by capped velocity (`carryVelocity`) towards the target from `computeCarry` (hover above the highest block under it or under the finger, magnet onto flat tops, never overlap a neighbour). It touches only the ground, the walls and its passengers (blocks resting on it, `GROUP_PASSENGER`); passengers are carried by friction and are never parented or teleported. Why: direct, shove-free lifting and stacking, while a jerk still leaves the stack behind.
+- Releasing over a tower places gently (zero velocity); only a gesture faster than `FLICK_SPEED` throws there, and the lift assistant steps aside during such a flick. Why: building must not turn into accidental throws, throwing at a tower must still work.
 - Dev-only `window.__game` exposes snapshots, spawn/clear, screen projections and physics probes; keep these hooks behind DEV. Why: browser checks must use the live physics world rather than duplicate module instances.

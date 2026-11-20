@@ -1,6 +1,6 @@
 import { beforeAll, expect, it } from 'vitest';
 import RAPIER from '@dimforge/rapier3d-compat';
-import { carryImpulse, throwVelocity } from '@/game/manipulation';
+import { carryVelocity, throwVelocity } from '@/game/manipulation';
 import { GRAVITY, BLOCK_SCALE, RUG_H } from '@/game/shapes';
 
 beforeAll(async () => { await RAPIER.init(); });
@@ -23,9 +23,7 @@ it('slow base movement carries the upper tower through contact', () => {
   base.setGravityScale(0, true);
   for (let i = 0; i < 240; i++) {
     const t = base.translation();
-    const impulse = carryImpulse({ x: Math.min(0.8, i / 240 * 0.8) - t.x, y: RUG_H + BLOCK_SCALE / 2 + 0.08 - t.y, z: 0 }, base.linvel(), world.timestep, false, base.mass());
-    impulse.y += (middle.mass() + top.mass()) * GRAVITY * world.timestep;
-    base.applyImpulse(impulse, true);
+    base.setLinvel(carryVelocity({ x: Math.min(0.8, i / 240 * 0.8) - t.x, y: RUG_H + BLOCK_SCALE / 2 + 0.08 - t.y, z: 0 }), true);
     base.setAngvel({ x: 0, y: 0, z: 0 }, true);
     world.step();
   }
@@ -41,7 +39,7 @@ it('a suddenly pulled base leaves an unstable tower, not a rigid group', () => {
   if (!base || !top) throw new Error('Missing tower');
   base.setGravityScale(0, true);
   for (let i = 0; i < 360; i++) {
-    if (i < 30) base.applyImpulse(carryImpulse({ x: 5 - base.translation().x, y: 0, z: 0 }, base.linvel(), world.timestep, true, base.mass()), true);
+    base.setLinvel(i < 30 ? carryVelocity({ x: 5 - base.translation().x, y: 0, z: 0 }) : { x: 0, y: 0, z: 0 }, true);
     world.step();
   }
   expect(top.translation().y).toBeLessThan(3);

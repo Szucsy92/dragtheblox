@@ -4,8 +4,6 @@ import { worldHalf, type Other } from './placement';
 export interface Velocity { x: number; y: number; z: number }
 export interface MotionSample { time: number; x: number; z: number }
 export const GESTURE_WINDOW_MS = 120;
-export const SLOW_ACCEL = 2.5;
-export const FAST_ACCEL = 90;
 
 /** Contact-connected blocks above the grabbed body, not rigidly attached passengers. */
 export function supportedAbove(base: Other, others: Other[]): number[] {
@@ -39,22 +37,24 @@ export function gestureVelocity(samples: MotionSample[], now: number): Velocity 
   return { x: (last.x - first.x) / dt, y: 0, z: (last.z - first.z) / dt };
 }
 
-export function throwVelocity(v: Velocity): Velocity | null {
+/** Launch velocity of a release, or null for a gentle place. `minSpeed` lets the caller demand a harder flick. */
+export function throwVelocity(v: Velocity, minSpeed = THROW_MIN): Velocity | null {
   const speed = Math.hypot(v.x, v.z);
-  if (speed < THROW_MIN) return null;
+  if (speed < minSpeed) return null;
   const arc = Math.min(2.5, speed * 0.1);
   const length = Math.hypot(v.x, arc, v.z);
   const scale = Math.min(1, THROW_MAX / length);
   return { x: v.x * scale, y: arc * scale, z: v.z * scale };
 }
 
-/** Acceleration-limited hand: slow movement transfers through friction, jerks leave the stack behind. */
-export function carryImpulse(error: Velocity, velocity: Velocity, dt: number, fast: boolean, mass: number): Velocity {
-  const target = { x: error.x * CARRY_GAIN, y: error.y * CARRY_GAIN, z: error.z * CARRY_GAIN };
-  const speed = Math.hypot(target.x, target.y, target.z);
-  const k = Math.min(1, CARRY_MAX / Math.max(speed, 1e-6));
-  const diff = { x: target.x * k - velocity.x, y: target.y * k - velocity.y, z: target.z * k - velocity.z };
-  const limit = (fast ? FAST_ACCEL : SLOW_ACCEL) * Math.min(dt, 0.05);
-  const scale = Math.min(1, limit / Math.max(Math.hypot(diff.x, diff.y, diff.z), 1e-6)) * mass;
-  return { x: diff.x * scale, y: Math.max(-FAST_ACCEL * Math.min(dt, 0.05), Math.min(FAST_ACCEL * Math.min(dt, 0.05), diff.y)) * mass, z: diff.z * scale };
+/**
+ * Velocity that steers the carried block towards its target: proportional and capped. The block follows the
+ * finger promptly (so lifting and stacking feel direct); a stack riding on it is carried by friction, and a
+ * sudden jerk leaves it behind.
+ */
+export function carryVelocity(error: Velocity): Velocity {
+  const x = error.x * CARRY_GAIN, y = error.y * CARRY_GAIN, z = error.z * CARRY_GAIN;
+  const speed = Math.hypot(x, y, z);
+  const k = speed > CARRY_MAX ? CARRY_MAX / speed : 1;
+  return { x: x * k, y: y * k, z: z * k };
 }

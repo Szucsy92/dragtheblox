@@ -1,17 +1,24 @@
 import type { RapierRigidBody } from "@react-three/rapier";
 import type { Other } from "./placement";
-import { GROUP_BLOCK, GROUP_HELD, type ShapeKind } from "./shapes";
+import { GROUP_BLOCK, GROUP_HELD, GROUP_PASSENGER, type ShapeKind } from "./shapes";
 
 // Live physics bodies keyed by block id (outside React state).
 export const bodies = new Map<number, RapierRigidBody>();
 // What kind of block each id is (needed for sizes while carrying).
 export const kinds = new Map<number, ShapeKind>();
 
-/** The hand supports the selected body; contact with all other bodies stays enabled. */
+/** Start / stop carrying: gravity off, and no collisions with other blocks (except its own passengers). */
 export function setCarried(body: RapierRigidBody, carried: boolean) {
   body.setGravityScale(carried ? 0 : 1, true);
   for (let i = 0; i < body.numColliders(); i++) {
     body.collider(i).setCollisionGroups(carried ? GROUP_HELD : GROUP_BLOCK);
+  }
+}
+
+/** A block resting on the carried one rides along through real contact (friction), and still hits everything else. */
+export function setPassenger(body: RapierRigidBody, on: boolean) {
+  for (let i = 0; i < body.numColliders(); i++) {
+    body.collider(i).setCollisionGroups(on ? GROUP_PASSENGER : GROUP_BLOCK);
   }
 }
 

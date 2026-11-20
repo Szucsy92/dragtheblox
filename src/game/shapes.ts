@@ -64,9 +64,11 @@ export interface BlockData {
 }
 
 // ---- Collision groups: (membership << 16) | filter ----
-// Held blocks remain physical participants so friction carries stacks and impacts transfer momentum.
 export const GROUP_BLOCK = 0x00010005; // blocks: collide with blocks + ground
-export const GROUP_HELD = GROUP_BLOCK;
+// The carried block touches only the ground, the walls and its own passengers (the blocks resting on it), so
+// it can never shove or plough through the rest of the castle, while the stack on top is carried by real friction.
+export const GROUP_HELD = 0x0002000c;
+export const GROUP_PASSENGER = 0x00090007; // blocks riding on the carried block: collide with everything else too
 export const GROUP_GROUND = 0x0004ffff; // rug and walls: collide with everything
 
 // ---- World ----
@@ -85,7 +87,9 @@ export const CARRY_GAIN = 14; // 1/s: how eagerly a carried block follows the fi
 export const CARRY_MAX = 14; // u/s: cap, so a carried block cannot fire the others away
 export const ROT_GAIN = 14; // 1/s: how fast a carried block turns to its target yaw
 export const ROT_MAX = 14; // rad/s
-export const THROW_MIN = 3; // recent gesture speed: slower = place, faster = throw
+export const THROW_MIN = 3; // gesture speed (u/s) at release on the floor: slower = gentle place, faster = throw
+/** Gesture speed above which a throw is coming: the lift assistant steps aside (and releasing over a tower throws). */
+export const FLICK_SPEED = 6;
 export const THROW_MAX = 24;
 
 // ---- Smart building ----

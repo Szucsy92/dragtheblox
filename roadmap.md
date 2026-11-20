@@ -1,4 +1,5 @@
 # Roadmap
+- [x] Restore the smooth carry/lift/stack assistant (finger-pointing intent, early lift, magnet) on top of the physical stack carry; the carried block no longer shoves the castle.
 - [x] Double the arena radius and keep its circular boundary continuous.
 - [x] Carry stacked blocks through real contact; let sudden pulls destabilize towers.
 - [x] Throw blocks into towers with gesture momentum and continuous collision detection; verify.
