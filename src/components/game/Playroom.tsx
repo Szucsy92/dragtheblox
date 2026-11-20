@@ -258,6 +258,16 @@ export default function Playroom() {
   const touches = useRef(new Set<number>());
   const probe = useRef<{ camera: THREE.Camera; gl: THREE.WebGLRenderer } | null>(null);
 
+  const clearAll = useCallback(() => {
+    drag.current = null;
+    touches.current.clear();
+    setActiveId(null);
+    setTrashHot(false);
+    bodies.clear();
+    kinds.clear();
+    setBlocks([]);
+  }, []);
+
   const overTrash = (x: number, y: number) => {
     const r = trashEl.current?.getBoundingClientRect();
     if (!r) return false;
