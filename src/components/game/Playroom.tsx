@@ -637,7 +637,7 @@ export default function Playroom() {
               onClick={() => spawn(s.kind)}
               aria-label={s.label}
               title={s.label}
-              className="h-[104px] w-[88px] shrink-0 rounded-xl p-0 transition-transform hover:bg-muted active:scale-90 [&_svg]:h-[104px] [&_svg]:w-[88px]"
+              className="h-[104px] w-[88px] shrink-0 rounded-none p-0 transition-transform hover:bg-transparent active:scale-90 [&_svg]:h-[104px] [&_svg]:w-[88px]"
             >
               <ShapeIcon kind={s.kind} color={nextColor} className="h-full w-full" />
             </Button>
