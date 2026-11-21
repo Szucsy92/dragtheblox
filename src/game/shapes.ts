@@ -78,7 +78,7 @@ export const GROUP_GROUND = 0x0004ffff; // rug and walls: collide with everythin
 export const PLAY_AREA = 12.4; // twice the original 6.2 radius
 /** The rug has real thickness: this is the height of the walkable ground, visuals and physics agree. */
 export const RUG_H = 0.05;
-/** Carried blocks are kept at least this far inside the rim (the wall colliders start at PLAY_AREA - 0.04). */
+/** Carried blocks are kept at least this far inside the rim (the wall colliders' inner face is exactly PLAY_AREA). */
 export const ARENA_MARGIN = 0.15;
 export const GRAVITY = 9.81 * SIZE_RATIO;
 

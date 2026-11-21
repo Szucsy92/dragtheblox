@@ -3,8 +3,9 @@ import * as THREE from "three";
 import { RoundedBox } from "@react-three/drei";
 import { RigidBody, CuboidCollider, BallCollider, ConvexHullCollider, type RapierRigidBody } from "@react-three/rapier";
 import type { ThreeEvent } from "@react-three/fiber";
-import { BLOCK_SCALE as S, GRAVITY, GROUP_BLOCK, type BlockData } from "@/game/shapes";
+import { BLOCK_SCALE as S, GROUP_BLOCK, type BlockData } from "@/game/shapes";
 import { bodies, kinds } from "@/game/registry";
+import { impactStrength } from "@/game/impact";
 import { knock } from "@/game/audio";
 
 // All sizes below are in block units and scaled by S ONCE, when the geometry / collider is built.
@@ -96,6 +97,7 @@ interface Props {
 
 export const Block = memo(function Block({ data, onGrab, active }: Props) {
   const ref = useRef<RapierRigidBody>(null);
+  const lastForce = useRef({ a: 0, t: 0 });
   const { kind, color, id } = data;
   const geo = useMemo(() => {
     if (kind === "arch") return archGeometry();
@@ -176,10 +178,14 @@ export const Block = memo(function Block({ data, onGrab, active }: Props) {
       linearDamping={0.15}
       angularDamping={0.8}
       onContactForce={(p) => {
-        // Compare acceleration (force / mass), not raw force: heavy blocks resting in a stack must stay quiet.
+        // Force per mass, and only a sudden jump counts: heavy blocks / tall stacks resting steadily stay quiet.
         const m = ref.current?.mass() ?? 1;
         const a = p.maxForceMagnitude / Math.max(m, 0.01);
-        if (a > 6 * GRAVITY) knock(Math.min(1, (Math.log10(a) - 1.9) / 2));
+        const now = performance.now();
+        const prev = now - lastForce.current.t < 120 ? lastForce.current.a : 0;
+        lastForce.current = { a, t: now };
+        const strength = impactStrength(a, prev);
+        if (strength > 0) knock(strength);
       }}
     >
       {mesh}

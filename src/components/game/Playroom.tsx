@@ -5,7 +5,7 @@ import { Environment, Lightformer, OrbitControls, ContactShadows } from "@react-
 import { Physics } from "@react-three/rapier";
 import { Trash2, RotateCw } from "lucide-react";
 import {
-  SELECTABLE_SHAPES, TOY_COLORS, shapeDef, halfExtents, type BlockData, type ShapeKind,
+  BLOCK_SCALE, SELECTABLE_SHAPES, TOY_COLORS, shapeDef, halfExtents, type BlockData, type ShapeKind,
   GRAVITY, ROT_GAIN, ROT_MAX, THROW_MIN, FLICK_SPEED,
   RUG_H, DRAG_LIFT, PLAY_AREA, RELEASE_KEEP,
 } from "@/game/shapes";
@@ -266,7 +266,7 @@ function AutoFrame({ controls, drag, orbiting }: {
       H = Math.max(H, t.y + worldHalf(k, q)[1]);
     });
     const d = drag.current;
-    if (d?.last) H = Math.max(H, d.last.y + 1);
+    if (d?.last) H = Math.max(H, d.last.y + BLOCK_SCALE / 2); // the carried block's own top
 
     const wantY = Math.max(1.5, H * 0.45);
     const need = (H + 2) * 2.0; // keeps a tower of height H inside the part of the screen the UI leaves free
@@ -316,12 +316,12 @@ export default function Playroom() {
     setBlocks([]);
   }, []);
 
-  const overTrash = (x: number, y: number) => {
+  const overTrash = useCallback((x: number, y: number) => {
     const r = trashEl.current?.getBoundingClientRect();
     if (!r) return false;
     const pad = 28;
     return x > r.left - pad && x < r.right + pad && y > r.top - pad && y < r.bottom + pad;
-  };
+  }, []);
 
   const spawn = (kind: ShapeKind) => {
     unlockAudio();
@@ -383,7 +383,7 @@ export default function Playroom() {
       }
     }
     sfx.drop();
-  }, []);
+  }, [overTrash]);
 
   const turnHeld = useCallback(() => {
     const d = drag.current;
@@ -463,7 +463,7 @@ export default function Playroom() {
       window.removeEventListener("pointerup", up);
       window.removeEventListener("pointercancel", up);
     };
-  }, [release]);
+  }, [release, overTrash]);
 
   // Dev-only handle (dropped from the built app): lets a scripted check read the room, drive it and
   // aim the pointer exactly, so the carry/stack flow can be verified instead of assumed.
@@ -545,10 +545,10 @@ export default function Playroom() {
           intensity={1.8}
           castShadow
           shadow-mapSize={[2048, 2048]}
-          shadow-camera-left={-12}
-          shadow-camera-right={12}
-          shadow-camera-top={12}
-          shadow-camera-bottom={-12}
+          shadow-camera-left={-(PLAY_AREA + 1)}
+          shadow-camera-right={PLAY_AREA + 1}
+          shadow-camera-top={PLAY_AREA + 1}
+          shadow-camera-bottom={-(PLAY_AREA + 1)}
           shadow-bias={-0.0004}
         />
         <Environment resolution={128}>
@@ -564,7 +564,7 @@ export default function Playroom() {
             ))}
           </Physics>
         </Suspense>
-        <ContactShadows position={[0, RUG_H + 0.004, 0]} opacity={0.55} scale={16} blur={2.5} far={4} />
+        <ContactShadows position={[0, RUG_H + 0.004, 0]} opacity={0.55} scale={(PLAY_AREA + 1) * 2} resolution={1024} blur={2.5} far={4} />
         <DragController drag={drag} />
         <CamProbe probe={probe} />
         <Keeper />

@@ -6,7 +6,7 @@ export const Route = createFileRoute("/")({
   head: () => ({
     meta: [
       { title: "Kockavár – színes építőkockák 3D-ben" },
-      { name: "description", content: "Pakolj meseszerű színes építőkockákat toronnyá, dobd, borítsd és rázd meg a telefont!" },
+      { name: "description", content: "Pakolj meseszerű színes építőkockákat toronnyá, dobd és borítsd őket!" },
       { property: "og:title", content: "Kockavár – színes építőkockák 3D-ben" },
       { property: "og:description", content: "Építs tornyot, dobáld és borítsd a kockákat valósághű fizikával." },
       { property: "og:type", content: "website" },
