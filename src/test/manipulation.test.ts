@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { supportedAbove, gestureVelocity, throwVelocity, carryVelocity, leanFor } from '@/game/manipulation';
-import { PLAY_AREA, GROUP_BLOCK, GROUP_HELD, GROUP_PASSENGER, GROUP_GROUND, CARRY_MAX, FLICK_SPEED, THROW_MIN, TILT_MAX } from '@/game/shapes';
+import { BLOCK_SCALE, PLAY_AREA, GROUP_BLOCK, GROUP_HELD, GROUP_PASSENGER, GROUP_GROUND, CARRY_MAX, FLICK_SPEED, THROW_MIN, TILT_MAX } from '@/game/shapes';
 import type { Other } from '@/game/placement';
 
 // Rapier's rule: two colliders touch when each one's membership meets the other's filter.
@@ -20,7 +20,7 @@ describe('physical manipulation', () => {
     expect(touches(GROUP_BLOCK, GROUP_BLOCK)).toBe(true);
   });
   it('finds the whole contact-connected tower above its base, excluding neighbours', () => {
-    expect(supportedAbove(cube(1, 0.9), [cube(2, 2.6), cube(3, 4.3), cube(4, 0.9, 4)])).toEqual([2, 3]);
+    expect(supportedAbove(cube(1, BLOCK_SCALE / 2), [cube(2, BLOCK_SCALE * 1.5), cube(3, BLOCK_SCALE * 2.5), cube(4, BLOCK_SCALE / 2, 4)])).toEqual([2, 3]);
   });
   it('the carried block follows the finger promptly, and its speed is capped', () => {
     expect(carryVelocity({ x: 0.1, y: 0, z: 0 }).x).toBeCloseTo(1.4);

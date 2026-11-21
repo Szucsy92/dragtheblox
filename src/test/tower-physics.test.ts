@@ -42,20 +42,21 @@ it('a suddenly pulled base leaves an unstable tower, not a rigid group', () => {
     base.setLinvel(i < 30 ? carryVelocity({ x: 5 - base.translation().x, y: 0, z: 0 }) : { x: 0, y: 0, z: 0 }, true);
     world.step();
   }
-  expect(top.translation().y).toBeLessThan(3);
+  expect(top.translation().y).toBeLessThan(3 * BLOCK_SCALE / 1.7);
   world.free();
 });
 it('a thrown sphere transfers momentum and knocks down the tower', () => {
   const { world, blocks } = room();
-  const ball = world.createRigidBody(RAPIER.RigidBodyDesc.dynamic().setTranslation(-5, 2.5, 0).setCcdEnabled(true));
+  const sizeRatio = BLOCK_SCALE / 1.7;
+  const ball = world.createRigidBody(RAPIER.RigidBodyDesc.dynamic().setTranslation(-5 * sizeRatio, 2.5 * sizeRatio, 0).setCcdEnabled(true));
   world.createCollider(RAPIER.ColliderDesc.ball(BLOCK_SCALE / 2).setFriction(0.9), ball);
-  const v = throwVelocity({ x: 20, y: 0, z: 0 });
+  const v = throwVelocity({ x: 20 * Math.sqrt(sizeRatio), y: 0, z: 0 });
   if (!v) throw new Error('No launch');
   ball.setLinvel(v, true);
   for (let i = 0; i < 360; i++) world.step();
   const top = blocks[2];
   if (!top) throw new Error('Missing top');
-  expect(top.translation().y).toBeLessThan(3);
+  expect(top.translation().y).toBeLessThan(3 * sizeRatio);
   expect(Math.abs(top.translation().x)).toBeGreaterThan(1);
   world.free();
 });

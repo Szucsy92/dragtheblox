@@ -21,7 +21,7 @@ export interface ShapeDef {
 }
 
 /** Edge length of the basic cube in world units. The old toys were 1.18. */
-export const BLOCK_SCALE = 1.7;
+export const BLOCK_SCALE = 2.125;
 /** How much bigger than the old toys: gravity and speeds scale with it so the motion feels the same. */
 const SIZE_RATIO = BLOCK_SCALE / 1.18;
 
@@ -35,6 +35,9 @@ export const SHAPES: ShapeDef[] = [
   { kind: "sphere", label: "Gömb", half: [0.5, 0.5, 0.5], flatTop: false, round: true },
   { kind: "half", label: "Félgömb", half: [0.6, 0.3, 0.6], flatTop: false, round: true },
 ];
+
+/** Tray choices; retain full definitions for geometry and existing physics helpers. */
+export const SELECTABLE_SHAPES = SHAPES.filter((shape) => shape.kind !== "half" && shape.kind !== "cone");
 
 export const shapeDef = (k: ShapeKind) => SHAPES.find((s) => s.kind === k)!;
 

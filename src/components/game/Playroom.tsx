@@ -5,7 +5,7 @@ import { Environment, Lightformer, OrbitControls, ContactShadows } from "@react-
 import { Physics } from "@react-three/rapier";
 import { Trash2, RotateCw } from "lucide-react";
 import {
-  SHAPES, TOY_COLORS, shapeDef, halfExtents, type BlockData, type ShapeKind,
+  SELECTABLE_SHAPES, TOY_COLORS, shapeDef, halfExtents, type BlockData, type ShapeKind,
   GRAVITY, ROT_GAIN, ROT_MAX, THROW_MIN, FLICK_SPEED,
   RUG_H, DRAG_LIFT, PLAY_AREA, RELEASE_KEEP,
 } from "@/game/shapes";
@@ -630,7 +630,7 @@ export default function Playroom() {
       {/* One scrollable row; tightly framed previews stay within the tray height. */}
       <div className="absolute inset-x-0 bottom-0 px-2" style={{ paddingBottom: "calc(env(safe-area-inset-bottom) + 8px)" }}>
         <div role="group" aria-label="Építőelemek" className="mx-auto flex max-w-xl touch-pan-x gap-1 overflow-x-auto overscroll-x-contain rounded-2xl bg-card/85 p-1.5 shadow-toy backdrop-blur">
-          {SHAPES.map((s) => (
+          {SELECTABLE_SHAPES.map((s) => (
             <Button
               key={s.kind}
               variant="ghost"

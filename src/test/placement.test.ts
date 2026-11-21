@@ -88,14 +88,15 @@ describe("pickSpawn", () => {
 });
 
 describe("pickBlock (what the finger points at)", () => {
-  // finger ray 5 up and 4 back, looking 45° down at the tower
+  // Keep the finger ray proportional to the blocks, looking 45° down at the tower.
   const tower = [cubeAt(1, 0, RUG_H + 0.5 * S, 0), cubeAt(2, 0, RUG_H + 1.5 * S, 0)];
   const d = Math.SQRT1_2;
   it("hits the tower from the front and aims at the front edge of its top", () => {
-    const p = pickBlock(0, 5, 4, 0, -d, -d, tower, 9);
+    const p = pickBlock(0, 5 * S / 1.7, 4 * S / 1.7, 0, -d, -d, tower, 9);
     expect(p?.id).toBe(2);
-    expect(p!.top).toBeCloseTo(RUG_H + 2 * S);
-    expect(Math.abs(p!.z)).toBeLessThanOrEqual(0.5 * S + 1e-9);
+    if (!p) throw new Error('Missing tower hit');
+    expect(p.top).toBeCloseTo(RUG_H + 2 * S);
+    expect(Math.abs(p.z)).toBeLessThanOrEqual(0.5 * S + 1e-9);
   });
   it("misses when the ray passes beside the tower", () => {
     expect(pickBlock(5, 5, 4, 0, -d, -d, tower, 9)).toBeNull();

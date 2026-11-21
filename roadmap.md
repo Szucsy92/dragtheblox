@@ -1,4 +1,5 @@
 # Roadmap
+- [ ] Enlarge the actual blocks by 25%, remove hemisphere and cone from the tray, and verify selection and physics.
 - [x] Double the tray previews in one horizontally scrollable row, retaining the original dimensional drawings without individual cards; verify touch selection.
 - [x] Precise but soft fits (centre / flush edge / grid, neighbour contact with edge alignment) and livelier carrying (lean into the motion, natural slide on release, haptic tick when the magnet clicks in).
 - [x] Restore the smooth carry/lift/stack assistant (finger-pointing intent, early lift, magnet) on top of the physical stack carry; the carried block no longer shoves the castle.
