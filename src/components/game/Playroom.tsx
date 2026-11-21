@@ -627,7 +627,7 @@ export default function Playroom() {
         </div>
       )}
 
-      {/* One scrollable row; previews are twice their original phone dimensions. */}
+      {/* One scrollable row; tightly framed previews stay within the tray height. */}
       <div className="absolute inset-x-0 bottom-0 px-2" style={{ paddingBottom: "calc(env(safe-area-inset-bottom) + 8px)" }}>
         <div role="group" aria-label="Építőelemek" className="mx-auto flex max-w-xl touch-pan-x gap-1 overflow-x-auto overscroll-x-contain rounded-2xl bg-card/85 p-1.5 shadow-toy backdrop-blur">
           {SHAPES.map((s) => (
@@ -637,7 +637,7 @@ export default function Playroom() {
               onClick={() => spawn(s.kind)}
               aria-label={s.label}
               title={s.label}
-              className="h-[104px] w-[88px] shrink-0 rounded-none p-0 transition-transform hover:bg-transparent active:scale-90 [&_svg]:h-[104px] [&_svg]:w-[88px]"
+              className="h-[104px] w-[104px] shrink-0 rounded-none p-0 transition-transform hover:bg-transparent active:scale-90 [&_svg]:size-[104px]"
             >
               <ShapeIcon kind={s.kind} color={nextColor} className="h-full w-full" />
             </Button>
