@@ -11,7 +11,7 @@ import {
 } from "@/game/shapes";
 import { clampArena, computeCarry, overlapsOther, pickBlock, pickSpawn, worldHalf, HALF_PI } from "@/game/placement";
 import { carryVelocity, gestureVelocity, leanFor, supportedAbove, throwVelocity, type MotionSample } from "@/game/manipulation";
-import { bodies, kinds, snapshot, setCarried, setPassenger } from "@/game/registry";
+import { bodies, kinds, poseOf, snapshot, setCarried, setPassenger } from "@/game/registry";
 import { sfx, unlockAudio } from "@/game/audio";
 import { Block } from "./Block";
 import { Room } from "./Room";
@@ -79,7 +79,7 @@ const MARK_SNAP = new THREE.Color("#7dffb0");
  * velocities, so it can never sink into the rug or other blocks and nothing "pops" when it is let go.
  * Also draws the landing marker: a flat footprint on whatever surface the block would land on.
  */
-function DragController({ drag }: { drag: React.MutableRefObject<DragState | null> }) {
+function DragController({ drag, onAbort }: { drag: React.MutableRefObject<DragState | null>; onAbort: () => void }) {
   const { camera, gl } = useThree();
   const plane = useMemo(() => new THREE.Plane(new THREE.Vector3(0, 1, 0), 0), []);
   const rectRef = useRef<THREE.Mesh>(null);
@@ -89,7 +89,7 @@ function DragController({ drag }: { drag: React.MutableRefObject<DragState | nul
     [],
   );
 
-  useFrame(() => {
+  const frame = () => {
     const rect = rectRef.current, round = roundRef.current;
     const hide = () => { if (rect) rect.visible = false; if (round) round.visible = false; };
     const d = drag.current;
@@ -195,6 +195,16 @@ function DragController({ drag }: { drag: React.MutableRefObject<DragState | nul
     }
     markMat.color.copy(res.snapped ? MARK_SNAP : MARK_FREE);
     markMat.opacity = res.snapped ? 0.65 : 0.4;
+  };
+
+  // An exception inside the frame loop would freeze the whole game: drop the drag instead.
+  useFrame(() => {
+    try {
+      frame();
+    } catch (err) {
+      console.error("Drag aborted:", err);
+      onAbort();
+    }
   });
 
   return (
@@ -214,16 +224,33 @@ function DragController({ drag }: { drag: React.MutableRefObject<DragState | nul
  */
 function Keeper() {
   useFrame(() => {
-    bodies.forEach((b) => {
-      const t = b.translation();
-      const r = Math.hypot(t.x, t.z);
-      if (r > PLAY_AREA + 0.3 || t.y < -1) {
-        const k = r > 1e-6 ? Math.min(1, (PLAY_AREA * 0.6) / r) : 1;
-        b.setTranslation({ x: t.x * k, y: Math.max(t.y, 0) + 2.5, z: t.z * k }, true);
-        b.setLinvel({ x: 0, y: 0, z: 0 }, true);
-        b.setAngvel({ x: 0, y: 0, z: 0 }, true);
+    for (const id of Array.from(bodies.keys())) {
+      const b = bodies.get(id);
+      const p = poseOf(id);
+      if (!b || !p) continue;
+      const { t, q } = p;
+      try {
+        if (!Number.isFinite(t.x + t.y + t.z)) {
+          // A broken (NaN) body would poison the camera framing and the placement maths: put it back.
+          b.setTranslation({ x: 0, y: 3, z: 0 }, true);
+          b.setRotation({ x: 0, y: 0, z: 0, w: 1 }, true);
+          b.setLinvel({ x: 0, y: 0, z: 0 }, true);
+          b.setAngvel({ x: 0, y: 0, z: 0 }, true);
+          continue;
+        }
+        if (!Number.isFinite(q.x + q.y + q.z + q.w)) b.setRotation({ x: 0, y: 0, z: 0, w: 1 }, true);
+        const r = Math.hypot(t.x, t.z);
+        if (r > PLAY_AREA + 0.3 || t.y < -1) {
+          const k = r > 1e-6 ? Math.min(1, (PLAY_AREA * 0.6) / r) : 1;
+          b.setTranslation({ x: t.x * k, y: Math.max(t.y, 0) + 2.5, z: t.z * k }, true);
+          b.setLinvel({ x: 0, y: 0, z: 0 }, true);
+          b.setAngvel({ x: 0, y: 0, z: 0 }, true);
+        }
+      } catch {
+        bodies.delete(id);
+        kinds.delete(id);
       }
-    });
+    }
   });
   return null;
 }
@@ -247,6 +274,13 @@ function AutoFrame({ controls, drag, orbiting }: {
     const ctl = controls.current;
     if (!ctl) return;
     const tgt = ctl.target as THREE.Vector3;
+    if (!Number.isFinite(camera.position.x + camera.position.y + camera.position.z + tgt.x + tgt.y + tgt.z)) {
+      // Recover from a poisoned camera (a black, frozen screen): back to the start view.
+      camera.position.set(14, 14, 22);
+      tgt.set(0, 1.5, 0);
+      userDist.current = null;
+      return;
+    }
     const dist = camera.position.distanceTo(tgt);
     if (userDist.current === null) { userDist.current = dist; autoDist.current = dist; }
     if (orbiting.current) { wasOrbiting.current = true; return; }
@@ -259,12 +293,13 @@ function AutoFrame({ controls, drag, orbiting }: {
     }
 
     let H = 0;
-    bodies.forEach((b, id) => {
+    for (const id of Array.from(bodies.keys())) {
       const k = kinds.get(id);
-      if (!k) return;
-      const t = b.translation(), q = b.rotation();
-      H = Math.max(H, t.y + worldHalf(k, q)[1]);
-    });
+      const p = k ? poseOf(id) : null;
+      if (!k || !p) continue;
+      const top = p.t.y + worldHalf(k, p.q)[1];
+      if (Number.isFinite(top)) H = Math.max(H, top);
+    }
     const d = drag.current;
     if (d?.last) H = Math.max(H, d.last.y + BLOCK_SCALE / 2); // the carried block's own top
 
@@ -303,12 +338,10 @@ export default function Playroom() {
   const orbiting = useRef(false);
   const trashEl = useRef<HTMLButtonElement>(null);
   const nextId = useRef(1);
-  const touches = useRef(new Set<number>());
   const probe = useRef<{ camera: THREE.Camera; gl: THREE.WebGLRenderer } | null>(null);
 
   const clearAll = useCallback(() => {
     drag.current = null;
-    touches.current.clear();
     setActiveId(null);
     setTrashHot(false);
     bodies.clear();
@@ -341,7 +374,14 @@ export default function Playroom() {
     setTrashHot(false);
     const body = bodies.get(d.id);
     if (overTrash(x, y)) {
-      endCarry(d);
+      // The block is about to be deleted. Only its passengers go back to normal (they simply fall); the carried
+      // block never gets its collisions back: it overlaps the castle and would blast it apart for a frame.
+      for (const id of d.load) {
+        const p = bodies.get(id);
+        if (p) setPassenger(p, false);
+      }
+      bodies.delete(d.id);
+      kinds.delete(d.id);
       setBlocks((b) => b.filter((bl) => bl.id !== d.id));
       sfx.trash();
       return;
@@ -400,11 +440,32 @@ export default function Playroom() {
     return () => window.removeEventListener("keydown", onKey);
   }, [turnHeld]);
 
+  /** Drop the current drag without placing anything special (second finger, lost pointer, tab hidden, error). */
+  const cancelDrag = useCallback(() => {
+    const d = drag.current;
+    if (!d) return;
+    drag.current = null;
+    setActiveId(null);
+    setTrashHot(false);
+    try {
+      endCarry(d);
+      const body = bodies.get(d.id);
+      body?.setLinvel({ x: 0, y: 0, z: 0 }, true);
+      body?.setAngvel({ x: 0, y: 0, z: 0 }, true);
+    } catch {
+      /* the body is already gone */
+    }
+  }, []);
+
   const onGrab = useCallback((id: number, e: ThreeEvent<PointerEvent>) => {
     if (e.pointerType === "mouse" && e.button !== 0) return;
-    if (touches.current.size > 1) return;
+    if (e.pointerType === "touch" && !e.isPrimary) return; // a second finger never grabs
     e.stopPropagation();
-    if (drag.current) return;
+    if (drag.current) {
+      // A new primary pointer means the old one is gone (a lost "up"): recover instead of staying stuck.
+      if (e.isPrimary && e.pointerId !== drag.current.pointerId) cancelDrag();
+      else return;
+    }
     const body = bodies.get(id);
     if (!body) return;
     unlockAudio();
@@ -419,51 +480,52 @@ export default function Playroom() {
     drag.current = { id, pointerId: e.pointerId, x: e.clientX, y: e.clientY, offX: 0, offZ: 0, started: false, x0: e.clientX, y0: e.clientY, last: null, vx: 0, vz: 0, wasSnapped: false, sticky: null, yaw: 0, load, samples: [] };
     setActiveId(id);
     sfx.pick();
-  }, []);
+  }, [cancelDrag]);
 
   useEffect(() => {
     const down = (e: PointerEvent) => {
       // The rotate button is meant to be pressed with a second finger while carrying.
       if ((e.target as Element | null)?.closest?.("[data-keep-drag]")) return;
-      if (e.pointerType === "touch") touches.current.add(e.pointerId);
-      // second finger: cancel drag so the view can rotate
-      if (touches.current.size > 1 && drag.current) {
-        const active = drag.current;
-        const body = bodies.get(active.id);
-        drag.current = null;
-        endCarry(active);
-        if (body) {
-          body.setLinvel({ x: 0, y: 0, z: 0 }, true);
-          body.setAngvel({ x: 0, y: 0, z: 0 }, true);
-        }
-        setActiveId(null);
-        setTrashHot(false);
-      }
+      // A second finger (never the primary pointer) hands the view back to the camera. No pointer bookkeeping
+      // that could go stale: if an "up" is ever lost, nothing stays stuck.
+      if (e.pointerType === "touch" && !e.isPrimary) cancelDrag();
     };
     const move = (e: PointerEvent) => {
       const d = drag.current;
       if (!d || e.pointerId !== d.pointerId) return;
+      // A mouse button released outside the window sends no "up" here: do not stay stuck to the cursor.
+      if (e.pointerType === "mouse" && e.buttons === 0) {
+        release(e.clientX, e.clientY);
+        return;
+      }
       d.x = e.clientX;
       d.y = e.clientY;
       const hot = overTrash(e.clientX, e.clientY);
       setTrashHot((h) => (h === hot ? h : hot));
     };
     const up = (e: PointerEvent) => {
-      touches.current.delete(e.pointerId);
       const d = drag.current;
       if (d && e.pointerId === d.pointerId) release(e.clientX, e.clientY);
+    };
+    const away = () => cancelDrag();
+    const hidden = () => {
+      if (document.hidden) cancelDrag();
     };
     window.addEventListener("pointerdown", down);
     window.addEventListener("pointermove", move);
     window.addEventListener("pointerup", up);
     window.addEventListener("pointercancel", up);
+    window.addEventListener("blur", away);
+    document.addEventListener("visibilitychange", hidden);
     return () => {
       window.removeEventListener("pointerdown", down);
       window.removeEventListener("pointermove", move);
       window.removeEventListener("pointerup", up);
       window.removeEventListener("pointercancel", up);
+      window.removeEventListener("blur", away);
+      document.removeEventListener("visibilitychange", hidden);
     };
-  }, [release, overTrash]);
+  }, [release, overTrash, cancelDrag]);
 
   // Dev-only handle (dropped from the built app): lets a scripted check read the room, drive it and
   // aim the pointer exactly, so the carry/stack flow can be verified instead of assumed.
@@ -564,8 +626,8 @@ export default function Playroom() {
             ))}
           </Physics>
         </Suspense>
-        <ContactShadows position={[0, RUG_H + 0.004, 0]} opacity={0.55} scale={(PLAY_AREA + 1) * 2} resolution={1024} blur={2.5} far={4} />
-        <DragController drag={drag} />
+        <ContactShadows position={[0, RUG_H + 0.004, 0]} opacity={0.55} scale={(PLAY_AREA + 1) * 2} blur={2.5} far={4} />
+        <DragController drag={drag} onAbort={cancelDrag} />
         <CamProbe probe={probe} />
         <Keeper />
         <AutoFrame controls={controls} drag={drag} orbiting={orbiting} />

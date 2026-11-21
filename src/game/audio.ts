@@ -63,7 +63,7 @@ export function knock(strength: number) {
   const c = ac();
   if (!c) return;
   const now = performance.now();
-  if (now - lastKnock < 35) return;
+  if (now - lastKnock < 60) return;
   lastKnock = now;
   const v = Math.min(1, Math.max(0.05, strength));
   const f = 380 + Math.random() * 260;

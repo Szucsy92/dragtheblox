@@ -22,16 +22,33 @@ export function setPassenger(body: RapierRigidBody, on: boolean) {
   }
 }
 
+/**
+ * Current pose of a block, or null. A body that has been freed by the physics engine (or is otherwise unreadable)
+ * is dropped from the registry instead of throwing: an exception in the frame loop would freeze the whole game.
+ */
+export function poseOf(id: number): { t: { x: number; y: number; z: number }; q: { x: number; y: number; z: number; w: number } } | null {
+  const b = bodies.get(id);
+  if (!b) return null;
+  try {
+    const t = b.translation();
+    const q = b.rotation();
+    return { t: { x: t.x, y: t.y, z: t.z }, q: { x: q.x, y: q.y, z: q.z, w: q.w } };
+  } catch {
+    bodies.delete(id);
+    kinds.delete(id);
+    return null;
+  }
+}
+
 /** Plain pose snapshot of all live blocks except `excludeId`, for the pure placement maths. */
 export function snapshot(excludeId?: number): Other[] {
   const out: Other[] = [];
-  bodies.forEach((b, id) => {
-    if (id === excludeId) return;
+  for (const id of Array.from(bodies.keys())) {
+    if (id === excludeId) continue;
     const kind = kinds.get(id);
-    if (!kind) return;
-    const t = b.translation();
-    const r = b.rotation();
-    out.push({ id, kind, x: t.x, y: t.y, z: t.z, q: { x: r.x, y: r.y, z: r.z, w: r.w } });
-  });
+    const p = kind ? poseOf(id) : null;
+    if (!kind || !p) continue;
+    out.push({ id, kind, x: p.t.x, y: p.t.y, z: p.t.z, q: p.q });
+  }
   return out;
 }
