@@ -16,6 +16,7 @@ import { sfx, unlockAudio } from "@/game/audio";
 import { Block } from "./Block";
 import { Room } from "./Room";
 import { ShapeIcon } from "./ShapeIcon";
+import { Button } from "@/components/ui/button";
 
 interface DragState {
   id: number;
@@ -589,7 +590,7 @@ export default function Playroom() {
       {/* Carry actions: only visible while a block is being dragged, small and quiet */}
       <div
         className="pointer-events-none absolute inset-x-0 flex items-end justify-between px-4"
-        style={{ bottom: "calc(env(safe-area-inset-bottom) + 84px)" }}
+        style={{ bottom: "calc(env(safe-area-inset-bottom) + 136px)" }}
       >
         <button
           data-keep-drag
@@ -626,18 +627,20 @@ export default function Playroom() {
         </div>
       )}
 
-      {/* Shape tray: low, the icons fill its height */}
+      {/* One scrollable row; previews are twice their original phone dimensions. */}
       <div className="absolute inset-x-0 bottom-0 px-2" style={{ paddingBottom: "calc(env(safe-area-inset-bottom) + 8px)" }}>
-        <div className="mx-auto flex max-w-xl overflow-x-auto rounded-2xl bg-card/85 p-1.5 shadow-toy backdrop-blur">
+        <div role="group" aria-label="Építőelemek" className="mx-auto flex max-w-xl touch-pan-x gap-1 overflow-x-auto overscroll-x-contain rounded-2xl bg-card/85 p-1.5 shadow-toy backdrop-blur">
           {SHAPES.map((s) => (
-            <button
+            <Button
               key={s.kind}
+              variant="ghost"
               onClick={() => spawn(s.kind)}
               aria-label={s.label}
-              className="flex h-[52px] min-w-11 flex-1 items-center justify-center rounded-xl transition-transform hover:bg-muted active:scale-90"
+              title={s.label}
+              className="h-[104px] w-[88px] shrink-0 rounded-xl p-0 transition-transform hover:bg-muted active:scale-90 [&_svg]:h-[104px] [&_svg]:w-[88px]"
             >
               <ShapeIcon kind={s.kind} color={nextColor} className="h-full w-full" />
-            </button>
+            </Button>
           ))}
         </div>
       </div>
