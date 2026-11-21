@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { clampArena, computeCarry, overlapsOther, pickBlock, pickSpawn, quatYaw, HALF_PI, type Other } from "@/game/placement";
-import { BLOCK_SCALE as S, DRAG_LIFT, HOVER_GAP, PLAY_AREA, RUG_H } from "@/game/shapes";
+import { BLOCK_SCALE as S, CONTACT_EPS, DRAG_LIFT, HOVER_GAP, PLAY_AREA, RUG_H } from "@/game/shapes";
 
 const id = { x: 0, y: 0, z: 0, w: 1 };
 const yawQ = (a: number) => ({ x: 0, y: Math.sin(a / 2), z: 0, w: Math.cos(a / 2) });
@@ -117,5 +117,50 @@ describe("clampArena", () => {
   it("leaves positions inside the rug alone", () => {
     const r = clampArena({ x: 1, z: 1, y: 1, yaw: 0, top: RUG_H, supportId: null, snapped: false }, "cube");
     expect(r.x).toBe(1);
+  });
+});
+
+describe("precise, realistic fits", () => {
+  const cube0 = cubeAt(1, 0, RUG_H + 0.5 * S, 0);
+  const onTop = RUG_H + S + 0.5 * S + HOVER_GAP;
+
+  it("locks exactly onto the centre inside the inner zone", () => {
+    const r = computeCarry({ kind: "cube", x: 0.12 * S, z: -0.09 * S, yaw: 0, heldY: onTop, stickyId: null, others: [cube0] });
+    expect(r.snapped).toBe(true);
+    expect(r.x).toBeCloseTo(0, 9);
+    expect(r.z).toBeCloseTo(0, 9);
+  });
+
+  it("eases off smoothly: the block slides into the pocket instead of jumping", () => {
+    let prev: number | null = null;
+    let worst = 0;
+    for (let x = 0; x <= 1.2 * S; x += 0.01) {
+      const r = computeCarry({ kind: "cube", x, z: 0, yaw: 0, heldY: onTop, stickyId: 1, others: [cube0] });
+      if (prev !== null) worst = Math.max(worst, Math.abs(r.x - prev));
+      prev = r.x;
+    }
+    expect(worst).toBeLessThan(0.08);
+  });
+
+  it("pulls a block on the floor against its neighbour until the faces touch, aligned centre to centre", () => {
+    const low = RUG_H + 0.5 * S + DRAG_LIFT;
+    const r = computeCarry({ kind: "cube", x: 1.15 * S, z: 0.1, yaw: 0, heldY: low, stickyId: null, others: [cube0] });
+    expect(r.x).toBeCloseTo(S + CONTACT_EPS, 9);
+    expect(r.z).toBeCloseTo(0, 9);
+    expect(r.snapped).toBe(true);
+  });
+
+  it("leaves a deliberate gap alone beyond the magnet range", () => {
+    const low = RUG_H + 0.5 * S + DRAG_LIFT;
+    const r = computeCarry({ kind: "cube", x: 1.4 * S, z: 0, yaw: 0, heldY: low, stickyId: null, others: [cube0] });
+    expect(r.x).toBeCloseTo(1.4 * S, 9);
+    expect(r.snapped).toBe(false);
+  });
+
+  it("aligns a brick's edge flush with a neighbour's edge", () => {
+    // brick (half length S) next to a cube; edges flush when its centre is S - 0.5 S = 0.5 S off the cube's centre in z
+    const low = RUG_H + 0.5 * S + DRAG_LIFT;
+    const r = computeCarry({ kind: "brick", x: 1.15 * S, z: 0.45 * S, yaw: HALF_PI, heldY: low, stickyId: null, others: [cube0] });
+    expect(r.z).toBeCloseTo(0.5 * S, 6);
   });
 });

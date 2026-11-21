@@ -1,7 +1,7 @@
 // Pure placement maths for carrying and stacking blocks. No React, no three.js, no physics engine:
 // everything is plain numbers so it can be unit-tested.
 import {
-  BLOCK_SCALE, ARENA_MARGIN, DRAG_LIFT, HOVER_GAP, PLAY_AREA, RUG_H, SNAP_RANGE, SNAP_STEP,
+  BLOCK_SCALE, ARENA_MARGIN, CONTACT_EPS, DRAG_LIFT, HOVER_GAP, PLAY_AREA, RUG_H, SNAP_EDGE_BIAS, SNAP_HARD, SNAP_RANGE, SNAP_STEP,
   SPAWN_HEIGHT, SUPPORT_KEEP, SUPPORT_OVERLAP, TILT_OK, halfExtents, shapeDef, type ShapeKind,
 } from "./shapes";
 
@@ -125,17 +125,46 @@ export function computeCarry(input: CarryInput): CarryResult {
   const yaw = oyaw + Math.round((yawPref - oyaw) / HALF_PI) * HALF_PI;
   const c = Math.cos(oyaw), s = Math.sin(oyaw);
   const dx = x - o.x, dz = z - o.z;
-  let lx = c * dx - s * dz, lz = s * dx + c * dz;
-  const step = SNAP_STEP * BLOCK_SCALE, range = SNAP_RANGE * BLOCK_SCALE;
-  const gx = Math.round(lx / step) * step, gz = Math.round(lz / step) * step;
-  const snapX = Math.abs(lx - gx) < range, snapZ = Math.abs(lz - gz) < range;
-  if (snapX) lx = gx;
-  if (snapZ) lz = gz;
+  const lx0 = c * dx - s * dz, lz0 = s * dx + c * dz;
+  // Carried footprint in the support's own frame, and the support's half extents.
+  const swap = Math.abs(Math.round((yawPref - oyaw) / HALF_PI)) % 2 === 1;
+  const [ohx, , ohz] = halfExtents(o.kind);
+  const ax = snapAxis(lx0, swap ? hz : hx, ohx, true);
+  const az = snapAxis(lz0, swap ? hx : hz, ohz, true);
   return finish({
-    x: o.x + c * lx + s * lz,
-    z: o.z - s * lx + c * lz,
-    y, yaw, top: best.top, supportId: o.id, snapped: snapX && snapZ,
+    x: o.x + c * ax.v + s * az.v,
+    z: o.z - s * ax.v + c * az.v,
+    y, yaw, top: best.top, supportId: o.id, snapped: ax.locked && az.locked,
   }, kind, heldY, others);
+}
+
+/**
+ * Magnet along one axis of a support / neighbour. `l` is where the carried block's centre wants to be relative to
+ * the other block's centre, `h` its half size, `s` the other block's half size. Candidates: centred, edges flush
+ * (carried edge level with the other block's edge) and, on a top, the half-cube grid. Exact inside the inner
+ * zone, easing off to nothing at the edge of the range, so the block slides into place instead of jumping.
+ */
+function snapAxis(l: number, h: number, s: number, grid: boolean): { v: number; locked: boolean } {
+  const range = SNAP_RANGE * BLOCK_SCALE;
+  let bestC = l, bestScore = Infinity, bestD = Infinity;
+  const consider = (c: number, bias: number) => {
+    const d = Math.abs(l - c);
+    if (d >= range) return; // out of reach: not a candidate
+    if (d * bias < bestScore) { bestScore = d * bias; bestC = c; bestD = d; }
+  };
+  consider(0, SNAP_EDGE_BIAS);
+  consider(s - h, SNAP_EDGE_BIAS);
+  consider(-(s - h), SNAP_EDGE_BIAS);
+  if (grid) {
+    const step = SNAP_STEP * BLOCK_SCALE;
+    consider(Math.round(l / step) * step, 1);
+  }
+  if (bestScore === Infinity) return { v: l, locked: false };
+  const inner = range * SNAP_HARD;
+  if (bestD <= inner) return { v: bestC, locked: true };
+  const t = (range - bestD) / (range - inner); // 1 -> 0 across the easing zone
+  const w = t * t * (3 - 2 * t);
+  return { v: l + (bestC - l) * w, locked: false };
 }
 
 function finish(r: CarryResult, kind: ShapeKind, heldY: number, others: Other[]): CarryResult {
@@ -194,31 +223,44 @@ export function pickBlock(
 }
 
 /**
- * The place where the block will end up must not overlap another block sideways (it would pop out on release).
- * Any block that is level with the TARGET height is an obstacle and the target is pushed out of it. The carried
- * block itself does not collide with other blocks, so this is the only thing keeping them apart.
+ * Side-by-side placement. Any block level with the TARGET height is a neighbour: if the carried block overlaps
+ * it, it is pushed out; if it is within magnet range, it is pulled in until the faces touch exactly. Along the
+ * touching face the block is aligned to the neighbour's edges or centre. The carried block itself does not
+ * collide with other blocks, so this is also what keeps them from overlapping (it would pop out on release).
  */
 function separate(r: CarryResult, kind: ShapeKind, heldY: number, others: Other[]): CarryResult {
   const [hx, hy, hz] = halfExtents(kind);
   const c = Math.abs(Math.cos(r.yaw)), s = Math.abs(Math.sin(r.yaw));
   const fx = c * hx + s * hz, fz = s * hx + c * hz;
   const lo = r.y - hy, hi = r.y + hy;
-  let px = r.x, pz = r.z, moved = false;
+  const range = SNAP_RANGE * BLOCK_SCALE;
+  let px = r.x, pz = r.z, moved = false, locked = false;
   for (let pass = 0; pass < 4; pass++) {
     let any = false;
     for (const o of others) {
       const [ax, ay, az] = worldHalf(o.kind, o.q);
       if (o.y - ay >= heldY) continue; // resting on / above the carried block
       if (o.y + ay <= lo + 0.02 || o.y - ay >= hi) continue; // not level with it
-      const ox = fx + ax - Math.abs(px - o.x), oz = fz + az - Math.abs(pz - o.z);
-      if (ox <= 0 || oz <= 0) continue;
-      if (ox < oz) px += (px >= o.x ? 1 : -1) * (ox + 0.02);
-      else pz += (pz >= o.z ? 1 : -1) * (oz + 0.02);
+      const ox = fx + ax - Math.abs(px - o.x), oz = fz + az - Math.abs(pz - o.z); // > 0: overlapping on that axis
+      let axis: "x" | "z" | null = null;
+      if (ox > 0 && oz > 0) axis = ox < oz ? "x" : "z";
+      else if (ox > 0 && oz > -range) axis = "z";
+      else if (oz > 0 && ox > -range) axis = "x";
+      if (!axis) continue;
+      if (axis === "x") {
+        px = o.x + (px >= o.x ? 1 : -1) * (fx + ax + CONTACT_EPS); // faces exactly touching
+        const a = snapAxis(pz - o.z, fz, az, false);
+        pz = o.z + a.v; locked = a.locked;
+      } else {
+        pz = o.z + (pz >= o.z ? 1 : -1) * (fz + az + CONTACT_EPS);
+        const a = snapAxis(px - o.x, fx, ax, false);
+        px = o.x + a.v; locked = a.locked;
+      }
       any = moved = true;
     }
     if (!any) break;
   }
-  return moved ? { ...r, x: px, z: pz, snapped: false } : r;
+  return moved ? { ...r, x: px, z: pz, snapped: locked } : r;
 }
 
 /** Would a block of this kind, placed at this pose, intersect any other block? (bounding boxes, small tolerance) */

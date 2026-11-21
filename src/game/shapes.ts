@@ -82,7 +82,7 @@ export const GRAVITY = 9.81 * SIZE_RATIO;
 // ---- Feel constants ----
 export const SPAWN_HEIGHT = 3.2; // centre height of a new block above the rug (was 7: too hard a landing)
 export const DRAG_LIFT = 0.3; // carried blocks float this far above the rug
-export const HOVER_GAP = 0.12; // carried blocks float this far above a tower top (short, soft drop)
+export const HOVER_GAP = 0.06; // carried blocks float this far above a tower top (tiny, soft drop)
 export const CARRY_GAIN = 14; // 1/s: how eagerly a carried block follows the finger
 export const CARRY_MAX = 14; // u/s: cap, so a carried block cannot fire the others away
 export const ROT_GAIN = 14; // 1/s: how fast a carried block turns to its target yaw
@@ -102,4 +102,17 @@ export const TILT_OK = 0.96;
 /** Magnet grid on a flat top, in block units (0.5 = half a cube). */
 export const SNAP_STEP = 0.5;
 /** Magnet pull range around each grid point, in block units. */
-export const SNAP_RANGE = 0.2;
+export const SNAP_RANGE = 0.25;
+/** Inside this fraction of the range the magnet is exact; outside it eases off smoothly to nothing (no jumps). */
+export const SNAP_HARD = 0.6;
+/** Edge alignment (flush edges, centres) wins over the plain grid when it is nearly as close. */
+export const SNAP_EDGE_BIAS = 0.7;
+/** Gap left when two blocks are pulled together on the same level (touching, not overlapping). */
+export const CONTACT_EPS = 0.004;
+
+// ---- Carry dynamics ----
+/** A carried block leans into the direction it is moved, like a weight on the finger. */
+export const TILT_PER_SPEED = 0.025; // rad per u/s
+export const TILT_MAX = 0.22; // rad (about 12°)
+/** Fraction of the carry velocity a released (not magnet-locked) block keeps: a natural little slide. */
+export const RELEASE_KEEP = 0.35;

@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import { supportedAbove, gestureVelocity, throwVelocity, carryVelocity } from '@/game/manipulation';
-import { PLAY_AREA, GROUP_BLOCK, GROUP_HELD, GROUP_PASSENGER, GROUP_GROUND, CARRY_MAX, FLICK_SPEED, THROW_MIN } from '@/game/shapes';
+import { supportedAbove, gestureVelocity, throwVelocity, carryVelocity, leanFor } from '@/game/manipulation';
+import { PLAY_AREA, GROUP_BLOCK, GROUP_HELD, GROUP_PASSENGER, GROUP_GROUND, CARRY_MAX, FLICK_SPEED, THROW_MIN, TILT_MAX } from '@/game/shapes';
 import type { Other } from '@/game/placement';
 
 // Rapier's rule: two colliders touch when each one's membership meets the other's filter.
@@ -26,6 +26,14 @@ describe('physical manipulation', () => {
     expect(carryVelocity({ x: 0.1, y: 0, z: 0 }).x).toBeCloseTo(1.4);
     const far = carryVelocity({ x: 5, y: 5, z: 0 });
     expect(Math.hypot(far.x, far.y, far.z)).toBeCloseTo(CARRY_MAX);
+  });
+  it('a carried block leans into the motion, capped, and barely at all right above a support', () => {
+    const l = leanFor({ x: 4, y: 0, z: 0 });
+    expect(l.z).toBeCloseTo(-1); // rotating about -z takes the top towards +x
+    expect(l.angle).toBeGreaterThan(0);
+    expect(leanFor({ x: 50, y: 0, z: 0 }).angle).toBeCloseTo(TILT_MAX);
+    expect(leanFor({ x: 50, y: 0, z: 0 }, 0.07).angle).toBeCloseTo(0.07);
+    expect(leanFor({ x: 0.1, y: 0, z: 0 }).angle).toBe(0);
   });
   it('over a tower only a hard flick throws', () => {
     const v = { x: 4, y: 0, z: 0 }; // between THROW_MIN and FLICK_SPEED

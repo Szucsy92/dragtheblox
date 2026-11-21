@@ -7,10 +7,10 @@ import { Trash2, RotateCw } from "lucide-react";
 import {
   SHAPES, TOY_COLORS, shapeDef, halfExtents, type BlockData, type ShapeKind,
   GRAVITY, ROT_GAIN, ROT_MAX, THROW_MIN, FLICK_SPEED,
-  RUG_H, DRAG_LIFT, PLAY_AREA,
+  RUG_H, DRAG_LIFT, PLAY_AREA, RELEASE_KEEP,
 } from "@/game/shapes";
 import { clampArena, computeCarry, overlapsOther, pickBlock, pickSpawn, worldHalf, HALF_PI } from "@/game/placement";
-import { carryVelocity, gestureVelocity, supportedAbove, throwVelocity, type MotionSample } from "@/game/manipulation";
+import { carryVelocity, gestureVelocity, leanFor, supportedAbove, throwVelocity, type MotionSample } from "@/game/manipulation";
 import { bodies, kinds, snapshot, setCarried, setPassenger } from "@/game/registry";
 import { sfx, unlockAudio } from "@/game/audio";
 import { Block } from "./Block";
@@ -29,7 +29,11 @@ interface DragState {
   x0: number;
   y0: number;
   /** Last computed target pose (used to place the block cleanly on release). */
-  last: { x: number; y: number; z: number; yaw: number } | null;
+  last: { x: number; y: number; z: number; yaw: number; snapped: boolean } | null;
+  /** Smoothed carry velocity (for the lean) and the previous magnet state (for the haptic tick). */
+  vx: number;
+  vz: number;
+  wasSnapped: boolean;
   /** Support under the carried block on the previous frame (hysteresis). */
   sticky: number | null;
   /** Preferred yaw; the player turns it with the rotate button. */
@@ -58,6 +62,13 @@ const curQ = new THREE.Quaternion();
 const tgtQ = new THREE.Quaternion();
 const errQ = new THREE.Quaternion();
 const eul = new THREE.Euler();
+const leanQ = new THREE.Quaternion();
+const leanAxis = new THREE.Vector3();
+
+/** Short tick on phones that support it (a no-op elsewhere). */
+const buzz = (ms: number) => {
+  try { navigator.vibrate?.(ms); } catch { /* not supported */ }
+};
 
 const MARK_FREE = new THREE.Color("#ffffff");
 const MARK_SNAP = new THREE.Color("#7dffb0");
@@ -137,17 +148,28 @@ function DragController({ drag }: { drag: React.MutableRefObject<DragState | nul
       : computeCarry({
           kind, x: aimX, z: aimZ, yaw: d.yaw, heldY: t.y, stickyId: pick ? pick.id : d.sticky, others,
         });
-    d.last = { x: res.x, y: res.y, z: res.z, yaw: res.yaw };
+    d.last = { x: res.x, y: res.y, z: res.z, yaw: res.yaw, snapped: res.snapped };
+    if (res.snapped && !d.wasSnapped) buzz(8); // a tiny tick when the block clicks into place
+    d.wasSnapped = res.snapped;
     d.sticky = res.supportId;
 
     // Position: steer by velocity (capped), never teleport. The passengers are carried by contact only.
-    body.setLinvel(carryVelocity({ x: res.x - t.x, y: res.y - t.y, z: res.z - t.z }), true);
+    const cv = carryVelocity({ x: res.x - t.x, y: res.y - t.y, z: res.z - t.z });
+    body.setLinvel(cv, true);
+    d.vx += (cv.x - d.vx) * 0.2;
+    d.vz += (cv.z - d.vz) * 0.2;
     for (const id of d.load) bodies.get(id)?.wakeUp();
 
     // Orientation: turn upright and to the target yaw by angular velocity along the shortest path.
     const r = body.rotation();
     curQ.set(r.x, r.y, r.z, r.w);
     tgtQ.setFromAxisAngle(UP, res.yaw);
+    // Dynamics: the carried block leans into the motion (not with a passenger stack on it, not while the
+    // magnet holds it level, and only slightly right above a support).
+    if (d.load.length === 0 && !res.snapped) {
+      const lean = leanFor({ x: d.vx, y: 0, z: d.vz }, res.supportId !== null ? 0.07 : undefined);
+      if (lean.angle > 0) tgtQ.premultiply(leanQ.setFromAxisAngle(leanAxis.set(lean.x, 0, lean.z), lean.angle));
+    }
     errQ.copy(tgtQ).multiply(curQ.invert());
     if (errQ.w < 0) { errQ.x = -errQ.x; errQ.y = -errQ.y; errQ.z = -errQ.z; errQ.w = -errQ.w; }
     const sinHalf = Math.hypot(errQ.x, errQ.y, errQ.z);
@@ -346,13 +368,17 @@ export default function Playroom() {
             pb.setTranslation({ x: pt.x + dx, y: pt.y + dy, z: pt.z + dz }, true);
           }
         }
-        // No leftover sliding or spinning: it just settles (the passengers too, so the stack does not topple).
+        // Magnet-locked: exact, no leftover motion. Otherwise a natural little slide (the passengers move with it,
+        // so the stack does not topple), then it settles under friction.
+        const keep = d.last?.snapped ? 0 : RELEASE_KEEP;
         for (const id of [d.id, ...d.load]) {
           const b = bodies.get(id);
           if (!b) continue;
-          b.setLinvel({ x: 0, y: 0, z: 0 }, true);
+          const lv = b.linvel();
+          b.setLinvel({ x: lv.x * keep, y: 0, z: lv.z * keep }, true);
           b.setAngvel({ x: 0, y: 0, z: 0 }, true);
         }
+        buzz(10);
       }
     }
     sfx.drop();
@@ -389,7 +415,7 @@ export default function Playroom() {
       const p = bodies.get(pid);
       if (p) setPassenger(p, true);
     }
-    drag.current = { id, pointerId: e.pointerId, x: e.clientX, y: e.clientY, offX: 0, offZ: 0, started: false, x0: e.clientX, y0: e.clientY, last: null, sticky: null, yaw: 0, load, samples: [] };
+    drag.current = { id, pointerId: e.pointerId, x: e.clientX, y: e.clientY, offX: 0, offZ: 0, started: false, x0: e.clientX, y0: e.clientY, last: null, vx: 0, vz: 0, wasSnapped: false, sticky: null, yaw: 0, load, samples: [] };
     setActiveId(id);
     sfx.pick();
   }, []);

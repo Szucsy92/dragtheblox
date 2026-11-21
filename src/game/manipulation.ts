@@ -1,4 +1,4 @@
-import { CARRY_GAIN, CARRY_MAX, THROW_MIN, THROW_MAX } from './shapes';
+import { CARRY_GAIN, CARRY_MAX, THROW_MIN, THROW_MAX, TILT_MAX, TILT_PER_SPEED } from './shapes';
 import { worldHalf, type Other } from './placement';
 
 export interface Velocity { x: number; y: number; z: number }
@@ -57,4 +57,15 @@ export function carryVelocity(error: Velocity): Velocity {
   const speed = Math.hypot(x, y, z);
   const k = speed > CARRY_MAX ? CARRY_MAX / speed : 1;
   return { x: x * k, y: y * k, z: z * k };
+}
+
+/**
+ * How a carried block leans: the top goes with the motion, like a weight hanging from the finger. Returns the
+ * (horizontal) rotation axis and angle; `cap` limits the angle (small right above a support, so its corner
+ * never dips into the block below).
+ */
+export function leanFor(v: Velocity, cap = TILT_MAX): { x: number; z: number; angle: number } {
+  const speed = Math.hypot(v.x, v.z);
+  if (speed < 0.2) return { x: 0, z: 0, angle: 0 };
+  return { x: v.z / speed, z: -v.x / speed, angle: Math.min(cap, TILT_MAX, speed * TILT_PER_SPEED) };
 }
