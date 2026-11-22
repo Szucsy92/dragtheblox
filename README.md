@@ -31,6 +31,6 @@ npm run dev
 ## Android alkalmazás (teljes képernyős kiosk, aláírt APK, OTA)
 
 A `native/android` projekt egy kiosk-védett WebView-héj, amely a Pop and Play Letters mintájára épül: aláírt Release APK
-a `.github/workflows/android-build.yml`-ből, egyszeri aláírókulcs-készítés az `create-keystore.yml`-ből, és felugró
+a `.github/workflows/android-build.yml`-ből, automatikus aláírókulcs (a `signing` ágon), és felugró
 ablakos frissítés a GitHub Releases-ről. Beállítás és kiosk-útmutató: [`native/README.md`](native/README.md).
 

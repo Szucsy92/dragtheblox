@@ -2,6 +2,11 @@ name: Android APK (aláírt, kiosk)
 
 # A native/android (Kotlin WebView-héj) projektből épít aláírt Release APK-t, és GitHub Release-t publikál.
 # Az alkalmazás a Release-ből frissül (felugró ablakkal), lásd native/README.md.
+#
+# Az aláírókulcs egyszer készül el, kézi titok (secret) nélkül: az első futás RSA-4096 kulcsot generál, és
+# AES-256-CBC/PBKDF2 titkosítva a `signing` ágra menti a jelszavával együtt; a későbbi build-ek onnan töltik vissza.
+# FIGYELEM: a jelszó a `signing` ágon van, ezért a kulcs védelme a tároló hozzáférési jogain múlik.
+# A `signing` ágat soha ne töröld és ne írd felül: más kulccsal aláírt APK nem frissítheti a telepített appot.
 on:
   workflow_dispatch:
   push:
@@ -9,17 +14,14 @@ on:
     paths:
       - "native/**"
       - ".github/workflows/android-build.yml"
-  pull_request:
-    paths:
-      - "native/**"
-      - ".github/workflows/android-build.yml"
 
 permissions:
   contents: read
 
+# Egyszerre csak egy futás: a kulcs létrehozása nem versenghet saját magával.
 concurrency:
-  group: android-build-${{ github.ref }}
-  cancel-in-progress: true
+  group: android-build
+  cancel-in-progress: false
 
 jobs:
   stamp:
@@ -38,8 +40,8 @@ jobs:
   android:
     needs: stamp
     runs-on: ubuntu-latest
-    outputs:
-      signed: ${{ steps.ks.outputs.signed }}
+    permissions:
+      contents: write # a signing ág létrehozásához (csak az első futásnál ír)
     env:
       APP_VERSION_NAME: ${{ needs.stamp.outputs.version }}
       APP_VERSION_CODE: ${{ needs.stamp.outputs.code }}
@@ -95,28 +97,68 @@ jobs:
             echo "::notice::Nincs WEB_APP_URL változó és beágyazott csomag: az app első indításkor rákérdez a játék címére."
           fi
 
-      - name: Aláírókulcs előkészítése (ha van)
-        id: ks
+      - name: Aláírókulcs létrehozása vagy visszatöltése a signing ágról
         env:
-          KS_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
-          KS_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          if [ -n "$KS_BASE64" ] && [ -n "$KS_PASSWORD" ]; then
-            KS_FILE="$RUNNER_TEMP/dragtheblox.keystore"
-            printf '%s' "$KS_BASE64" | base64 -d > "$KS_FILE"
-            chmod 600 "$KS_FILE"
-            echo "ANDROID_KEYSTORE_FILE=$KS_FILE" >> "$GITHUB_ENV"
-            echo "signed=true" >> "$GITHUB_OUTPUT"
+          KS_FILE="$RUNNER_TEMP/dragtheblox.keystore"
+          ENC_FILE="$RUNNER_TEMP/dragtheblox.keystore.enc"
+
+          if git ls-remote --exit-code --heads origin signing >/dev/null 2>&1; then
+            echo "Meglévő signing ág megtalálva; a korábbi kulcsot töltöm vissza."
+            git fetch --depth=1 origin signing
+            KS_PASS="$(git show FETCH_HEAD:keystore.pass)"
+            echo "::add-mask::$KS_PASS"
+            export KS_PASS
+            test "${#KS_PASS}" -ge 12 || {
+              echo "::error::A signing ágon tárolt kulcsjelszó hiányzik vagy hibás."
+              exit 1
+            }
+            git show FETCH_HEAD:release.keystore.enc > "$ENC_FILE"
+            if ! openssl enc -d -aes-256-cbc -pbkdf2 -iter 600000 -pass env:KS_PASS -in "$ENC_FILE" -out "$KS_FILE" 2>/dev/null \
+               || ! keytool -list -keystore "$KS_FILE" -storepass "$KS_PASS" -alias dragtheblox >/dev/null 2>&1; then
+              rm -f "$KS_FILE"
+              echo "::error::A signing ágon lévő kulcs nem fejthető vissza. A signing ágat nem írom felül; a mentést külön kell megvizsgálni."
+              exit 1
+            fi
           else
-            echo "::warning::Nincs Android aláírókulcs (ANDROID_KEYSTORE_*): aláíratlan APK készül, ez nem kerül kiadásba. Futtasd az Aláírókulcs készítése workflow-t."
-            echo "signed=false" >> "$GITHUB_OUTPUT"
+            echo "Nincs signing ág; egyszeri RSA-4096 kulcsot hozok létre."
+            KS_PASS="$(openssl rand -hex 32)"
+            echo "::add-mask::$KS_PASS"
+            export KS_PASS
+            keytool -genkeypair -storetype PKCS12 -keystore "$KS_FILE" \
+              -alias dragtheblox -storepass "$KS_PASS" -keypass "$KS_PASS" \
+              -keyalg RSA -keysize 4096 -validity 36525 \
+              -dname "CN=Kockavar, C=HU"
+            openssl enc -aes-256-cbc -pbkdf2 -iter 600000 -salt -pass env:KS_PASS -in "$KS_FILE" -out "$ENC_FILE"
+
+            SIGN_DIR="$(mktemp -d)"
+            cp "$ENC_FILE" "$SIGN_DIR/release.keystore.enc"
+            printf '%s' "$KS_PASS" > "$SIGN_DIR/keystore.pass"
+            (
+              cd "$SIGN_DIR"
+              git init -q -b signing
+              git config user.name "github-actions"
+              git config user.email "github-actions@users.noreply.github.com"
+              git add release.keystore.enc keystore.pass
+              git commit -q -m "Create Kockavar Android signing key"
+              git push -q "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" signing
+            )
+            rm -rf "$SIGN_DIR"
+            echo "::notice::Az új aláírókulcs elkészült és a signing ágra került."
           fi
 
+          chmod 600 "$KS_FILE"
+          {
+            echo "ANDROID_KEYSTORE_FILE=$KS_FILE"
+            echo "ANDROID_KEYSTORE_PASSWORD=$KS_PASS"
+            echo "ANDROID_KEY_ALIAS=dragtheblox"
+          } >> "$GITHUB_ENV"
+          keytool -list -keystore "$KS_FILE" -storepass "$KS_PASS" -alias dragtheblox >/dev/null
+          echo "Az aláírókulcs készen áll."
+
       - name: Android release APK
-        env:
-          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
-          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
         run: |
           set -euo pipefail
           gradle -p native/android assembleRelease --no-daemon
@@ -124,16 +166,12 @@ jobs:
           test -n "$APK"
           mkdir -p out
           cp "$APK" "out/kockavar-${BUILD_STAMP}.apk"
-          if [ -n "${ANDROID_KEYSTORE_FILE:-}" ]; then
-            APKSIGNER=$(find "${ANDROID_HOME:-/usr/local/lib/android/sdk}/build-tools" -name apksigner | sort -V | tail -n1)
-            "$APKSIGNER" verify --verbose "out/kockavar-${BUILD_STAMP}.apk"
-          else
-            echo "::notice::A release APK aláíratlan; nincs debug build."
-          fi
+          APKSIGNER=$(find "${ANDROID_HOME:-/usr/local/lib/android/sdk}/build-tools" -name apksigner | sort -V | tail -n1)
+          "$APKSIGNER" verify --verbose "out/kockavar-${BUILD_STAMP}.apk"
 
       - name: Kulcs törlése a futtatóról
         if: always()
-        run: rm -f "$RUNNER_TEMP/dragtheblox.keystore"
+        run: rm -f "$RUNNER_TEMP/dragtheblox.keystore" "$RUNNER_TEMP/dragtheblox.keystore.enc"
 
       - uses: actions/upload-artifact@v4
         with:
@@ -142,8 +180,7 @@ jobs:
           if-no-files-found: error
 
   release:
-    # Csak ALÁÍRT build kerül kiadásba (az aláíratlan APK-t az app nem tudná frissítésként telepíteni).
-    if: ${{ always() && needs.android.result == 'success' && needs.android.outputs.signed == 'true' && github.event_name != 'pull_request' }}
+    if: ${{ needs.android.result == 'success' }}
     needs: [stamp, android]
     runs-on: ubuntu-latest
     permissions:
@@ -162,5 +199,5 @@ jobs:
           make_latest: true
           body: |
             Kockavár Android · ${{ needs.stamp.outputs.version }} (#${{ needs.stamp.outputs.code }})
-            Aláírt Release APK (kulcs nélkül aláíratlan; debug build nincs). Az app az újabb kiadást felugró ablakban ajánlja fel.
+            Aláírt Release APK. Az app az újabb kiadást felugró ablakban ajánlja fel (azonos kulccsal aláírva, ezért felülírja a régit).
           files: out/*

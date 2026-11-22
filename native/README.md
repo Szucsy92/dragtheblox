@@ -30,15 +30,15 @@ a GitHub Releases-ről.
      HTTPS címe (pl. a Lovable *Publish* után kapott cím). Ez az alapérték, amit az app-beli beállítás felülírhat.
    *Opcionális, offline:* `BUNDLE_WEB` = `true`: a workflow megpróbálja statikus csomagként (`NATIVE_BUILD=1`,
    TanStack Start SPA mód) beágyazni a játékot az APK-ba. Ha ez nem sikerül, a build a `WEB_APP_URL` címre esik vissza.
-2. **Aláírókulcs:** Actions → **Aláírókulcs készítése (egyszeri)** workflow futtatása
-   (előtte a `KEYSTORE_ADMIN_TOKEN` és `KEYSTORE_BACKUP_PASSPHRASE` secretek kellenek, lásd a workflow fejlécét).
-   A kulcs és a jelszó titokként a repóba kerül (`ANDROID_KEYSTORE_BASE64`, `ANDROID_KEYSTORE_PASSWORD`, `ANDROID_KEY_ALIAS`),
-   a mentés csak jelszóval titkosítva tölthető le. **A kulcsot ne írd felül:** a telepített app csak ugyanazzal a kulccsal
-   aláírt APK-ra frissülhet.
+2. **Aláírókulcs: nincs teendő, kézi titok sem kell.** Az első build maga generál egy RSA-4096 kulcsot, és
+   titkosítva (AES-256-CBC/PBKDF2) a jelszavával együtt a `signing` ágra menti a beépített `GITHUB_TOKEN`-nel; a későbbi
+   build-ek onnan töltik vissza. **A `signing` ágat ne töröld és ne írd felül:** a telepített app csak ugyanazzal a kulccsal
+   aláírt APK-ra frissülhet. *Figyelem:* a jelszó is a `signing` ágon van, a kulcs védelme tehát a tároló hozzáférési jogain
+   múlik. Nyilvános tárolóban az ág is olvasható (a frissítéshez a kiadásoknak nyilvánosnak kell lenniük), ezért a kulcs
+   nem tekinthető titoknak: a telepített app védelmét a kiadások feletti írási jog adja.
 3. **Build:** Actions → **Android APK (aláírt, kiosk)** → *Run workflow* (vagy `native/**` módosítása `main`-en).
    Eredmény: GitHub Release `native-<dátum>-<futásszám>` címkével és `kockavar-<dátum>.apk` melléklettel.
-   **Csak aláírt build kerül kiadásba** (kulcs nélkül az APK csak munkafolyamat-melléklet marad, mert az app nem tudná
-   frissítésként telepíteni).
+   Minden kiadás aláírt (a build `apksigner`-rel ellenőrzi).
    A repónak **nyilvánosnak** kell lennie, hogy az app hitelesítés nélkül lássa a kiadást.
 
 ## Valódi kiosk (eszköztulajdonos)
