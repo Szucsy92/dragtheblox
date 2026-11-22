@@ -24,6 +24,8 @@ import android.webkit.WebResourceResponse
 import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
+import android.text.InputType
+import android.widget.EditText
 import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.ProgressBar
@@ -58,6 +60,7 @@ class MainActivity : ComponentActivity() {
     private var showingOffline = false
     private var pendingApk: File? = null
     private var updateDialog: Dialog? = null
+    private var urlDialog: Dialog? = null
     private var updateChecked = false
     private var networkCallback: ConnectivityManager.NetworkCallback? = null
     private val lock = ChildLockController { runOnUiThread { showParentMenu() } }
@@ -75,7 +78,7 @@ class MainActivity : ComponentActivity() {
     }
 
     private val allowedHost: String
-        get() = if (bundled) ASSET_HOST else (Uri.parse(BuildConfig.WEB_APP_URL).host ?: "")
+        get() = if (bundled) ASSET_HOST else (Uri.parse(AppSettings.webUrl(this)).host ?: "")
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -192,8 +195,13 @@ class MainActivity : ComponentActivity() {
     private fun loadApp() {
         val w = web ?: return
         showingOffline = false
-        val url = if (bundled) "https://$ASSET_HOST/" else BuildConfig.WEB_APP_URL
-        if (url.isBlank()) showOffline("A játék webes címe nincs beállítva a buildben (WEB_APP_URL).") else w.loadUrl(url)
+        val url = if (bundled) "https://$ASSET_HOST/" else AppSettings.webUrl(this)
+        if (url.isBlank()) {
+            showOffline("A játék címe még nincs beállítva. Szülői menü (5 koppintás a jobb felső sarokban) → Játék címe.")
+            root.post { promptForUrl() } // első indításkor a szülő rögtön megadhatja
+        } else {
+            w.loadUrl(url)
+        }
     }
 
     private fun showOffline(reason: String) {
@@ -310,18 +318,60 @@ class MainActivity : ComponentActivity() {
 
     private fun showParentMenu() {
         if (updateDialog?.isShowing == true) return
-        val items = arrayOf("Vissza a játékhoz", "Frissítés keresése", "Kilépés")
+        val items = arrayOf("Vissza a játékhoz", "Frissítés keresése", "Játék címe", "Kilépés")
         val d = AlertDialog.Builder(this)
             .setTitle("Szülői menü · ${BuildConfig.VERSION_NAME}")
             .setItems(items) { _, which ->
                 when (which) {
                     1 -> checkForUpdate(manual = true)
-                    2 -> confirmExit()
+                    2 -> promptForUrl()
+                    3 -> confirmExit()
                 }
             }
             .setOnDismissListener { hideSystemBars() }
             .create()
         d.setOnShowListener { d.window?.let { immersive(it) } }
+        d.show()
+    }
+
+    /** A játék webes címének megadása (https://…). Mentés után azonnal betölti. */
+    private fun promptForUrl() {
+        if (urlDialog?.isShowing == true || bundled) return
+        val pad = (20 * resources.displayMetrics.density).toInt()
+        val input = EditText(this).apply {
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_URI
+            setSingleLine(true)
+            hint = "https://…"
+            setText(AppSettings.webUrl(this@MainActivity))
+        }
+        val box = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(pad, pad / 2, pad, 0)
+            addView(input)
+        }
+        val d = AlertDialog.Builder(this)
+            .setTitle("Játék címe")
+            .setMessage("A kiadott játék HTTPS címe (pl. a Lovable Publish után kapott cím).")
+            .setView(box)
+            .setPositiveButton("Mentés", null)
+            .setNegativeButton("Mégsem", null)
+            .create()
+        d.setOnShowListener {
+            d.window?.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_STATE_VISIBLE)
+            d.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
+                val url = AppSettings.normalize(input.text.toString())
+                if (url == null) {
+                    Toast.makeText(this, "Érvénytelen cím. Példa: https://kockavar.lovable.app", Toast.LENGTH_LONG).show()
+                } else {
+                    AppSettings.setWebUrl(this, url)
+                    d.dismiss()
+                    loadApp()
+                }
+            }
+            d.window?.let { immersive(it) }
+        }
+        d.setOnDismissListener { urlDialog = null; hideSystemBars() }
+        urlDialog = d
         d.show()
     }
 

@@ -14,7 +14,7 @@ a GitHub Releases-ről.
   - nincs hosszú-érintés menü, nincs nagyítás, a rendszer betűmérete nem törik a játékot;
   - ha a WebView folyamata összeomlik, az app új WebView-t épít (nem fagy ki).
 - **Szülői menü:** 5 gyors koppintás 2 másodpercen belül a **jobb felső sarokban** (72 dp-s láthatatlan felület):
-  Vissza a játékhoz / Frissítés keresése / Kilépés (megerősítéssel).
+  Vissza a játékhoz / Frissítés keresése / **Játék címe** / Kilépés (megerősítéssel).
 - **OTA frissítés (felugró ablak):** indításkor az app megnézi a GitHub `releases/latest` kiadását. Ha a címke végi
   futásszám nagyobb a telepített `versionCode`-nál, megjelenik az **„Új frissítés elérhető 🎉”** ablak
   (**Később** / **Letöltés**, haladásjelzővel). A Letöltés az APK-t az appon belül letölti, majd elindítja a telepítést
@@ -23,8 +23,11 @@ a GitHub Releases-ről.
 
 ## Beállítás (egyszer)
 
-1. **Webes cím:** Settings → Secrets and variables → Actions → **Variables** → `WEB_APP_URL` = a kiadott játék HTTPS
-   címe (pl. a Lovable *Publish* után kapott cím). Ezt tölti be az app.
+1. **Webes cím (kétféleképpen, bármelyik elég):**
+   - **az appban:** első indításkor az app magától rákérdez a játék HTTPS címére (később: Szülői menü → *Játék címe*);
+     a cím az eszközön megmarad, nem kell újraépíteni az APK-t;
+   - **a buildben:** Settings → Secrets and variables → Actions → **Variables** → `WEB_APP_URL` = a kiadott játék
+     HTTPS címe (pl. a Lovable *Publish* után kapott cím). Ez az alapérték, amit az app-beli beállítás felülírhat.
    *Opcionális, offline:* `BUNDLE_WEB` = `true`: a workflow megpróbálja statikus csomagként (`NATIVE_BUILD=1`,
    TanStack Start SPA mód) beágyazni a játékot az APK-ba. Ha ez nem sikerül, a build a `WEB_APP_URL` címre esik vissza.
 2. **Aláírókulcs:** Actions → **Aláírókulcs készítése (egyszeri)** workflow futtatása
@@ -34,6 +37,8 @@ a GitHub Releases-ről.
    aláírt APK-ra frissülhet.
 3. **Build:** Actions → **Android APK (aláírt, kiosk)** → *Run workflow* (vagy `native/**` módosítása `main`-en).
    Eredmény: GitHub Release `native-<dátum>-<futásszám>` címkével és `kockavar-<dátum>.apk` melléklettel.
+   **Csak aláírt build kerül kiadásba** (kulcs nélkül az APK csak munkafolyamat-melléklet marad, mert az app nem tudná
+   frissítésként telepíteni).
    A repónak **nyilvánosnak** kell lennie, hogy az app hitelesítés nélkül lássa a kiadást.
 
 ## Valódi kiosk (eszköztulajdonos)

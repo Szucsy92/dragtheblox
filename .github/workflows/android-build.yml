@@ -38,6 +38,8 @@ jobs:
   android:
     needs: stamp
     runs-on: ubuntu-latest
+    outputs:
+      signed: ${{ steps.ks.outputs.signed }}
     env:
       APP_VERSION_NAME: ${{ needs.stamp.outputs.version }}
       APP_VERSION_CODE: ${{ needs.stamp.outputs.code }}
@@ -52,7 +54,7 @@ jobs:
             echo "::error::Literális \\n szekvencia a forrásban (sortörés helyett)."; exit 1
           fi
 
-      - uses: actions/setup-java@v4
+      - uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: 21
@@ -86,11 +88,11 @@ jobs:
           cp -R "$(dirname "$INDEX")"/. "$WWW"/
           echo "Beágyazva: $(dirname "$INDEX") → $WWW"
 
+      # Nem hiba: a webes cím az appban is megadható (első indításkor rákérdez, vagy Szülői menü → Játék címe).
       - name: Webes forrás ellenőrzése
         run: |
           if [ -z "${WEB_APP_URL:-}" ] && [ ! -f native/android/app/src/main/assets/www/index.html ]; then
-            echo "::error::Nincs mit betölteni: állítsd be a WEB_APP_URL repository variable-t (a kiadott játék HTTPS címe), vagy kapcsold be a BUNDLE_WEB=true opciót."
-            exit 1
+            echo "::notice::Nincs WEB_APP_URL változó és beágyazott csomag: az app első indításkor rákérdez a játék címére."
           fi
 
       - name: Aláírókulcs előkészítése (ha van)
@@ -107,7 +109,7 @@ jobs:
             echo "ANDROID_KEYSTORE_FILE=$KS_FILE" >> "$GITHUB_ENV"
             echo "signed=true" >> "$GITHUB_OUTPUT"
           else
-            echo "::notice::Nincs Android aláírókulcs – aláíratlan Release APK készül (az nem telepíthető frissítésként)."
+            echo "::warning::Nincs Android aláírókulcs (ANDROID_KEYSTORE_*): aláíratlan APK készül, ez nem kerül kiadásba. Futtasd az Aláírókulcs készítése workflow-t."
             echo "signed=false" >> "$GITHUB_OUTPUT"
           fi
 
@@ -140,8 +142,8 @@ jobs:
           if-no-files-found: error
 
   release:
-    # Csak kézi indításnál vagy main-re pusholáskor, ha az Android-build sikeres.
-    if: ${{ always() && needs.android.result == 'success' && github.event_name != 'pull_request' }}
+    # Csak ALÁÍRT build kerül kiadásba (az aláíratlan APK-t az app nem tudná frissítésként telepíteni).
+    if: ${{ always() && needs.android.result == 'success' && needs.android.outputs.signed == 'true' && github.event_name != 'pull_request' }}
     needs: [stamp, android]
     runs-on: ubuntu-latest
     permissions:
