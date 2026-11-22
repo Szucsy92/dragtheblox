@@ -42,3 +42,7 @@ use the editor.
 - Per-frame code reads bodies only through `poseOf` / `snapshot` (they drop a freed body instead of throwing), the drag frame is wrapped so an error cancels the drag, and `Keeper` / `AutoFrame` repair NaN bodies and a NaN camera. Why: one exception or NaN in the frame loop freezes the whole game.
 - No pointer bookkeeping that can go stale: a second finger is `!isPrimary`, and a drag is cancelled on blur / hidden tab / mouse released outside. Why: a lost pointerup used to leave the drag (and the trash button) stuck and block every later grab.
 - Trashing a carried block never gives it its collisions back (it overlaps the castle); only its passengers return to normal.
+- The Android app (`native/android`) is a thin WebView shell: kiosk (`startLockTask`, device-owner Lock Task), immersive, only the game's own host may be loaded, parent menu by 5 taps in the top-right corner, update dialog from GitHub Releases. `.github/workflows/android-build.yml` is the only official Android build; release tags are `native-<date>-<run number>` and the run number is the APK `versionCode`. Why: the in-app updater compares the tag number with the installed `versionCode`.
+- Never commit a keystore or its password; signing comes only from the `ANDROID_KEYSTORE_*` secrets, and releases must always be signed with the same key. Why: an APK signed with another key cannot update the installed app.
+- `NATIVE_BUILD=1` (vite) is set only by the Android workflow; keep the normal build and the hosted site unaffected by it.
+

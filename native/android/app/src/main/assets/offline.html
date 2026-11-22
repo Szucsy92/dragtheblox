@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="hu">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+<style>
+  html, body { height: 100%; margin: 0; background: #0e1222; color: #f0f1f9; font-family: sans-serif; }
+  body { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 22px; text-align: center; padding: 24px; box-sizing: border-box; }
+  .blocks { display: flex; gap: 10px; align-items: flex-end; }
+  .b { width: 44px; height: 44px; border-radius: 10px; }
+  h1 { margin: 0; font-size: 26px; }
+  p { margin: 0; color: #a0a3b8; font-size: 16px; max-width: 320px; }
+  button { font-size: 20px; font-weight: 700; color: #0e1222; background: #5fd37f; border: 0; border-radius: 18px; padding: 16px 36px; }
+  button:active { transform: scale(.96); }
+</style>
+</head>
+<body>
+  <div class="blocks"><div class="b" style="background:#2a9d4b"></div><div class="b" style="background:#e63946;height:60px"></div><div class="b" style="background:#ffd60a"></div></div>
+  <h1>Kockavár</h1>
+  <p>%%REASON%%</p>
+  <button onclick="Native.retry()">Újra</button>
+</body>
+</html>
