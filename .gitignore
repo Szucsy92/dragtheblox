@@ -39,3 +39,4 @@ native/android/local.properties
 native/android/app/src/main/assets/www/
 *.keystore
 *.jks
+dist-native/

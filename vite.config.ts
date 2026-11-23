@@ -9,17 +9,10 @@
 // You can pass additional config via defineConfig({ vite: { ... }, etc... }) if needed.
 import { defineConfig } from "@lovable.dev/vite-tanstack-config";
 
-// NATIVE_BUILD=1 is set only by the Android workflow (optional BUNDLE_WEB): static single-page output with an
-// index.html that can be bundled into the APK. Normal builds and the hosted site are unaffected.
-// (globalThis cast: tsconfig restricts the global types, so Node's `process` is not declared here)
-const nativeBuild =
-  (globalThis as { process?: { env?: Record<string, string | undefined> } }).process?.env?.NATIVE_BUILD === "1";
-
 export default defineConfig({
   tanstackStart: {
     // Redirect TanStack Start's bundled server entry to src/server.ts (our SSR error wrapper).
     // nitro/vite builds from this
     server: { entry: "server" },
-    ...(nativeBuild ? { spa: { enabled: true, prerender: { outputPath: "/index.html" } } } : {}),
   },
 });

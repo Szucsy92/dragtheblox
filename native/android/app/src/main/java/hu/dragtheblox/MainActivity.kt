@@ -3,11 +3,8 @@ package hu.dragtheblox
 import android.annotation.SuppressLint
 import android.app.AlertDialog
 import android.app.Dialog
-import android.content.Context
 import android.content.Intent
 import android.graphics.Color
-import android.net.ConnectivityManager
-import android.net.Network
 import android.net.Uri
 import android.os.Bundle
 import android.provider.Settings
@@ -16,16 +13,12 @@ import android.view.View
 import android.view.ViewGroup
 import android.view.Window
 import android.view.WindowManager
-import android.webkit.JavascriptInterface
 import android.webkit.RenderProcessGoneDetail
-import android.webkit.WebResourceError
 import android.webkit.WebResourceRequest
 import android.webkit.WebResourceResponse
 import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
-import android.text.InputType
-import android.widget.EditText
 import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.ProgressBar
@@ -40,6 +33,7 @@ import androidx.core.view.WindowInsetsControllerCompat
 import androidx.lifecycle.lifecycleScope
 import androidx.webkit.WebViewAssetLoader
 import kotlinx.coroutines.launch
+import java.io.ByteArrayInputStream
 import java.io.File
 import java.io.IOException
 
@@ -47,25 +41,22 @@ private const val ASSET_HOST = "appassets.androidplatform.net"
 private val BACKGROUND = 0xFF0E1222.toInt()
 
 /**
- * Kockavár: teljes képernyős, kiosk-védett WebView héj a webes játék köré.
+ * Kockavár: teljesen offline, teljes képernyős, kiosk-védett játék. A játék az APK-ba van csomagolva (assets/www),
+ * a WebView csak ezt a saját forrást tölti be, minden külső kérés le van tiltva: a játékhoz nem kell internet.
  *  - immersive sticky mód, ébren tartott képernyő, letiltott Vissza gomb;
  *  - képernyőrögzítés (Lock Task), eszköztulajdonosként valódi kiosk;
- *  - csak a játék saját címe nyitható meg (külső linkek le vannak tiltva);
  *  - szülői menü: 5 gyors koppintás a jobb felső sarokban;
- *  - felugró ablakos frissítés a GitHub Releases-ről.
+ *  - az egyetlen hálózati használat a (nem kötelező) frissítés-ellenőrzés a GitHub Releases-ről, felugró ablakkal.
  */
 class MainActivity : ComponentActivity() {
     private lateinit var root: FrameLayout
     private var web: WebView? = null
-    private var showingOffline = false
     private var pendingApk: File? = null
     private var updateDialog: Dialog? = null
-    private var urlDialog: Dialog? = null
     private var updateChecked = false
-    private var networkCallback: ConnectivityManager.NetworkCallback? = null
     private val lock = ChildLockController { runOnUiThread { showParentMenu() } }
 
-    /** Ha a CI beágyazta a webes csomagot (assets/www), a játék teljesen offline fut. */
+    /** A játék a CI-ben beágyazott webes csomagból fut (assets/www). */
     private val bundled: Boolean by lazy {
         try { assets.list("www")?.contains("index.html") == true } catch (_: IOException) { false }
     }
@@ -76,9 +67,6 @@ class MainActivity : ComponentActivity() {
             .addPathHandler("/", WebViewAssetLoader.PathHandler { path -> serveBundled(path) })
             .build()
     }
-
-    private val allowedHost: String
-        get() = if (bundled) ASSET_HOST else (Uri.parse(AppSettings.webUrl(this)).host ?: "")
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -92,7 +80,6 @@ class MainActivity : ComponentActivity() {
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
             override fun handleOnBackPressed() {}
         })
-        watchNetwork()
         hideSystemBars()
         Kiosk.prepare(this)
         pinApp()
@@ -143,10 +130,6 @@ class MainActivity : ComponentActivity() {
     }
 
     override fun onDestroy() {
-        networkCallback?.let {
-            try { (getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager).unregisterNetworkCallback(it) } catch (_: Exception) {}
-        }
-        networkCallback = null
         web?.let { root.removeView(it); it.destroy() }
         web = null
         super.onDestroy()
@@ -175,8 +158,9 @@ class MainActivity : ComponentActivity() {
             mixedContentMode = WebSettings.MIXED_CONTENT_NEVER_ALLOW
             cacheMode = WebSettings.LOAD_DEFAULT
             textZoom = 100 // a rendszer betűmérete ne törje szét a játék elrendezését
+            javaScriptCanOpenWindowsAutomatically = false
+            setSupportMultipleWindows(false)
         }
-        addJavascriptInterface(Bridge(), "Native")
         webViewClient = Client()
     }
 
@@ -194,69 +178,31 @@ class MainActivity : ComponentActivity() {
 
     private fun loadApp() {
         val w = web ?: return
-        showingOffline = false
-        val url = if (bundled) "https://$ASSET_HOST/" else AppSettings.webUrl(this)
-        if (url.isBlank()) {
-            showOffline("A játék címe még nincs beállítva. Szülői menü (5 koppintás a jobb felső sarokban) → Játék címe.")
-            root.post { promptForUrl() } // első indításkor a szülő rögtön megadhatja
-        } else {
-            w.loadUrl(url)
-        }
+        if (bundled) w.loadUrl("https://$ASSET_HOST/") else showMissing()
     }
 
-    private fun showOffline(reason: String) {
-        val w = web ?: return
-        showingOffline = true
+    /** Csak akkor látszik, ha a build elromlott és nem került csomag az APK-ba. */
+    private fun showMissing() {
         val html = try {
-            assets.open("offline.html").bufferedReader().use { it.readText() }.replace("%%REASON%%", reason)
+            assets.open("missing.html").bufferedReader().use { it.readText() }
         } catch (_: IOException) {
-            "<html><body style='background:#0e1222;color:#fff'><p>$reason</p></body></html>"
+            "<html><body style='background:#0e1222;color:#fff'><p>A játékcsomag hiányzik.</p></body></html>"
         }
-        w.loadDataWithBaseURL(null, html, "text/html", "UTF-8", null)
-    }
-
-    /** Hálózat visszatértekor az offline oldalról magától újratölt. */
-    private fun watchNetwork() {
-        try {
-            val cm = getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
-            val cb = object : ConnectivityManager.NetworkCallback() {
-                override fun onAvailable(network: Network) {
-                    runOnUiThread { if (showingOffline && !bundled) loadApp() }
-                }
-            }
-            cm.registerDefaultNetworkCallback(cb)
-            networkCallback = cb
-        } catch (e: Exception) {
-            e.printStackTrace()
-        }
-    }
-
-    private inner class Bridge {
-        @JavascriptInterface
-        fun retry() {
-            runOnUiThread { loadApp() }
-        }
+        web?.loadDataWithBaseURL(null, html, "text/html", "UTF-8", null)
     }
 
     private inner class Client : WebViewClient() {
-        // Kiosk: kizárólag a játék saját címe tölthető be, külső linkre nem lehet kilépni.
-        override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
-            val host = request.url.host ?: return true
-            return host != allowedHost
-        }
+        // Kiosk és offline: kizárólag az app saját forrása nyitható meg, külső linkre nem lehet kilépni.
+        override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean =
+            request.url.host != ASSET_HOST
 
         override fun shouldInterceptRequest(view: WebView, request: WebResourceRequest): WebResourceResponse? =
-            if (bundled) assetLoader.shouldInterceptRequest(request.url) else null
-
-        override fun onReceivedError(view: WebView, request: WebResourceRequest, error: WebResourceError) {
-            if (request.isForMainFrame) showOffline("Nincs internetkapcsolat. Ha visszatér, a játék magától betöltődik.")
-        }
-
-        override fun onReceivedHttpError(view: WebView, request: WebResourceRequest, errorResponse: WebResourceResponse) {
-            if (request.isForMainFrame && errorResponse.statusCode >= 400) {
-                showOffline("A játék most nem érhető el (${errorResponse.statusCode}). Próbáld újra egy kicsit később.")
+            if (request.url.host == ASSET_HOST) {
+                assetLoader.shouldInterceptRequest(request.url)
+            } else {
+                // Minden külső kérés (betűtípus, analitika, bármi) tiltva: a játék teljesen offline.
+                WebResourceResponse("text/plain", "UTF-8", 403, "Blocked", emptyMap(), ByteArrayInputStream(ByteArray(0)))
             }
-        }
 
         // A WebView folyamata összeomlott vagy a rendszer leállította: új WebView, nem fagy ki a játék.
         override fun onRenderProcessGone(view: WebView, detail: RenderProcessGoneDetail): Boolean {
@@ -265,7 +211,7 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    /** A beágyazott webes csomag kiszolgálása; az ismeretlen (kiterjesztés nélküli) útvonalak az index.html-re esnek vissza (SPA). */
+    /** A beágyazott játék kiszolgálása; az ismeretlen (kiterjesztés nélküli) útvonalak az index.html-re esnek vissza (SPA). */
     private fun serveBundled(path: String): WebResourceResponse? {
         val rel = path.trimStart('/').ifEmpty { "index.html" }
         val candidates = mutableListOf("www/$rel")
@@ -279,7 +225,8 @@ class MainActivity : ComponentActivity() {
                 // próbáljuk a következőt
             }
         }
-        return null
+        // Hiányzó fájl: tiszta 404 (a null a WebView-t a nem létező domainre küldené).
+        return WebResourceResponse("text/plain", "UTF-8", 404, "Not found", emptyMap(), ByteArrayInputStream(ByteArray(0)))
     }
 
     private fun mimeOf(name: String): String = when (name.substringAfterLast('.', "").lowercase()) {
@@ -318,60 +265,18 @@ class MainActivity : ComponentActivity() {
 
     private fun showParentMenu() {
         if (updateDialog?.isShowing == true) return
-        val items = arrayOf("Vissza a játékhoz", "Frissítés keresése", "Játék címe", "Kilépés")
+        val items = arrayOf("Vissza a játékhoz", "Frissítés keresése", "Kilépés")
         val d = AlertDialog.Builder(this)
             .setTitle("Szülői menü · ${BuildConfig.VERSION_NAME}")
             .setItems(items) { _, which ->
                 when (which) {
                     1 -> checkForUpdate(manual = true)
-                    2 -> promptForUrl()
-                    3 -> confirmExit()
+                    2 -> confirmExit()
                 }
             }
             .setOnDismissListener { hideSystemBars() }
             .create()
         d.setOnShowListener { d.window?.let { immersive(it) } }
-        d.show()
-    }
-
-    /** A játék webes címének megadása (https://…). Mentés után azonnal betölti. */
-    private fun promptForUrl() {
-        if (urlDialog?.isShowing == true || bundled) return
-        val pad = (20 * resources.displayMetrics.density).toInt()
-        val input = EditText(this).apply {
-            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_URI
-            setSingleLine(true)
-            hint = "https://…"
-            setText(AppSettings.webUrl(this@MainActivity))
-        }
-        val box = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(pad, pad / 2, pad, 0)
-            addView(input)
-        }
-        val d = AlertDialog.Builder(this)
-            .setTitle("Játék címe")
-            .setMessage("A kiadott játék HTTPS címe (pl. a Lovable Publish után kapott cím).")
-            .setView(box)
-            .setPositiveButton("Mentés", null)
-            .setNegativeButton("Mégsem", null)
-            .create()
-        d.setOnShowListener {
-            d.window?.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_STATE_VISIBLE)
-            d.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
-                val url = AppSettings.normalize(input.text.toString())
-                if (url == null) {
-                    Toast.makeText(this, "Érvénytelen cím. Példa: https://kockavar.lovable.app", Toast.LENGTH_LONG).show()
-                } else {
-                    AppSettings.setWebUrl(this, url)
-                    d.dismiss()
-                    loadApp()
-                }
-            }
-            d.window?.let { immersive(it) }
-        }
-        d.setOnDismissListener { urlDialog = null; hideSystemBars() }
-        urlDialog = d
         d.show()
     }
 

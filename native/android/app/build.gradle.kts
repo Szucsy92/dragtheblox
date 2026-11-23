@@ -15,9 +15,6 @@ android {
         // A frissítés-ellenőrzés a CI-ban a GITHUB_REPOSITORY (tulajdonos/repó) alapján keres; helyi buildnél üres = kikapcsolva.
         val updateRepo = System.getenv("GITHUB_REPOSITORY") ?: ""
         buildConfigField("String", "UPDATE_REPO", "\"$updateRepo\"")
-        // A játék webes címe (HTTPS). Ha a CI beágyazta a webes csomagot (assets/www), az az elsőbbséget élvezi.
-        val webUrl = System.getenv("WEB_APP_URL") ?: ""
-        buildConfigField("String", "WEB_APP_URL", "\"$webUrl\"")
     }
     // Aláírás csak akkor, ha a CI megadja a kulcstárat (környezeti változókból, soha nem a forrásból).
     val keystorePath = System.getenv("ANDROID_KEYSTORE_FILE")

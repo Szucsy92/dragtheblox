@@ -1,7 +1,9 @@
 name: Android APK (aláírt, kiosk)
 
-# A native/android (Kotlin WebView-héj) projektből épít aláírt Release APK-t, és GitHub Release-t publikál.
+# A játékot önálló, offline csomagként építi (native-web/ + vite.native.config.ts), beágyazza a native/android
+# (Kotlin WebView-héj) projektbe, és aláírt Release APK-t publikál GitHub Release-ként. A játékhoz nem kell internet.
 # Az alkalmazás a Release-ből frissül (felugró ablakkal), lásd native/README.md.
+# Játék- vagy forrásmódosítás után: Actions → Run workflow (a src/** módosítása nem indítja magától).
 #
 # Az aláírókulcs egyszer készül el, kézi titok (secret) nélkül: az első futás RSA-4096 kulcsot generál, és
 # AES-256-CBC/PBKDF2 titkosítva a `signing` ágra menti a jelszavával együtt; a későbbi build-ek onnan töltik vissza.
@@ -13,6 +15,8 @@ on:
     branches: [main]
     paths:
       - "native/**"
+      - "native-web/**"
+      - "vite.native.config.ts"
       - ".github/workflows/android-build.yml"
 
 permissions:
@@ -46,7 +50,6 @@ jobs:
       APP_VERSION_NAME: ${{ needs.stamp.outputs.version }}
       APP_VERSION_CODE: ${{ needs.stamp.outputs.code }}
       BUILD_STAMP: ${{ needs.stamp.outputs.stamp }}
-      WEB_APP_URL: ${{ vars.WEB_APP_URL }}
     steps:
       - uses: actions/checkout@v4
 
@@ -66,35 +69,22 @@ jobs:
         with:
           gradle-version: "8.13"
 
-      # Opcionális: a webes játék beágyazása az APK-ba (teljesen offline működés).
-      # Bekapcsolás: Settings → Secrets and variables → Actions → Variables → BUNDLE_WEB = true.
-      # Ha a webes build nem ad statikus index.html-t, a héj a WEB_APP_URL címet tölti be.
+      # A játék offline csomagja: nincs SSR, nincs router, nincs hálózat. Ez kerül az APK-ba (assets/www).
       - uses: oven-sh/setup-bun@v2
-        if: ${{ vars.BUNDLE_WEB == 'true' }}
-        continue-on-error: true
 
-      - name: Webes csomag beágyazása (opcionális)
-        if: ${{ vars.BUNDLE_WEB == 'true' }}
-        continue-on-error: true
+      - name: Játék beágyazása (offline csomag)
         run: |
           set -euo pipefail
           bun install --frozen-lockfile
-          NATIVE_BUILD=1 bun run build
-          INDEX=$(find dist .output -name index.html -not -path '*/node_modules/*' 2>/dev/null | head -n1 || true)
-          if [ -z "$INDEX" ]; then
-            echo "::warning::A webes build nem készített statikus index.html-t; a héj a WEB_APP_URL címet tölti be."
-            exit 0
-          fi
+          bun run build:native
+          test -f dist-native/index.html || { echo "::error::A webes build nem készített dist-native/index.html-t."; exit 1; }
           WWW=native/android/app/src/main/assets/www
           rm -rf "$WWW"; mkdir -p "$WWW"
-          cp -R "$(dirname "$INDEX")"/. "$WWW"/
-          echo "Beágyazva: $(dirname "$INDEX") → $WWW"
-
-      # Nem hiba: a webes cím az appban is megadható (első indításkor rákérdez, vagy Szülői menü → Játék címe).
-      - name: Webes forrás ellenőrzése
-        run: |
-          if [ -z "${WEB_APP_URL:-}" ] && [ ! -f native/android/app/src/main/assets/www/index.html ]; then
-            echo "::notice::Nincs WEB_APP_URL változó és beágyazott csomag: az app első indításkor rákérdez a játék címére."
+          cp -R dist-native/. "$WWW"/
+          echo "Beágyazva: dist-native → $WWW ($(du -sh "$WWW" | cut -f1))"
+          # Offline-ellenőrzés: a csomag nem hivatkozhat külső címre (betűtípus, CDN, analitika).
+          if grep -rEl 'https?://(fonts\.googleapis|fonts\.gstatic|cdn\.|unpkg|cdnjs)' "$WWW" >/dev/null 2>&1; then
+            echo "::warning::A csomag külső címre hivatkozik; az app tiltja a külső kéréseket, de nézd át: grep -r 'https://' dist-native"
           fi
 
       - name: Aláírókulcs létrehozása vagy visszatöltése a signing ágról

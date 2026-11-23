@@ -1,5 +1,5 @@
 # Roadmap
-- [ ] Android kiosk app (`native/android`): build the signed APK in GitHub Actions, then verify kiosk pinning, the update dialog and the offline page on a real device. The Kotlin sources and workflows were written without compiling; the first CI run stopped at our own WEB_APP_URL guard (now a notice: the address is asked in the app).
+- [ ] Android offline kiosk app (`native/android`): run the workflow once, then verify on a real device that the bundled game runs without internet, kiosk pinning, the update dialog and the signing branch. The Kotlin sources, the offline web build and the workflows were written without compiling or running them.
 - [ ] Enlarge the actual blocks by 25%, remove hemisphere and cone from the tray, and verify selection and physics.
 - [x] Double the tray previews in one horizontally scrollable row, retaining the original dimensional drawings without individual cards; verify touch selection.
 - [x] Precise but soft fits (centre / flush edge / grid, neighbour contact with edge alignment) and livelier carrying (lean into the motion, natural slide on release, haptic tick when the magnet clicks in).

@@ -28,9 +28,10 @@ npm i
 npm run dev
 ```
 
-## Android alkalmazás (teljes képernyős kiosk, aláírt APK, OTA)
+## Android alkalmazás (offline, teljes képernyős kiosk, aláírt APK, OTA)
 
-A `native/android` projekt egy kiosk-védett WebView-héj, amely a Pop and Play Letters mintájára épül: aláírt Release APK
-a `.github/workflows/android-build.yml`-ből, automatikus aláírókulcs (a `signing` ágon), és felugró
-ablakos frissítés a GitHub Releases-ről. Beállítás és kiosk-útmutató: [`native/README.md`](native/README.md).
-
+A `native/android` projekt egy kiosk-védett Kotlin héj, amelybe a **játék offline csomagként be van építve** (internet
+nélkül is fut, külső kérések tiltva), a Pop and Play Letters mintájára: aláírt Release APK a
+`.github/workflows/android-build.yml`-ből (automatikus aláírókulcs a `signing` ágon) és felugró ablakos frissítés a
+GitHub Releases-ről. Az offline játékcsomag a `native-web/` + `vite.native.config.ts` (`bun run build:native`).
+Részletek: [`native/README.md`](native/README.md).
