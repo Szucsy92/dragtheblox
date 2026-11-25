@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { clampArena, computeCarry, overlapsOther, pickBlock, pickSpawn, quatYaw, HALF_PI, type Other } from "@/game/placement";
-import { BLOCK_SCALE as S, CONTACT_EPS, DRAG_LIFT, HOVER_GAP, PLAY_AREA, RUG_H } from "@/game/shapes";
+import { clampArena, computeCarry, overlapsOther, pickBlock, pickSpawn, sweepMove, quatYaw, HALF_PI, type Other } from "@/game/placement";
+import { BLOCK_SCALE as S, CONTACT_EPS, DRAG_LIFT, SAFE_EDGE, HOVER_GAP, PLAY_AREA, RUG_H } from "@/game/shapes";
 
 const id = { x: 0, y: 0, z: 0, w: 1 };
 const yawQ = (a: number) => ({ x: 0, y: Math.sin(a / 2), z: 0, w: Math.cos(a / 2) });
@@ -163,5 +163,95 @@ describe("precise, realistic fits", () => {
     const low = RUG_H + 0.5 * S + DRAG_LIFT;
     const r = computeCarry({ kind: "brick", x: 1.15 * S, z: 0.45 * S, yaw: HALF_PI, heldY: low, stickyId: null, others: [cube0] });
     expect(r.z).toBeCloseTo(0.5 * S, 6);
+  });
+});
+
+describe("sweepMove (the carried block cannot pass through other blocks)", () => {
+  const half: [number, number, number] = [0.5 * S, 0.5 * S, 0.5 * S];
+  const wall = cubeAt(1, 0, RUG_H + 0.5 * S, 0);
+  const lowY = RUG_H + 0.5 * S + DRAG_LIFT;
+
+  it("stops at the face of a block instead of passing through to the other side", () => {
+    const end = sweepMove({ x: -3 * S, y: lowY, z: 0 }, { x: 3 * S, y: lowY, z: 0 }, half, [wall], lowY);
+    expect(end.x).toBeLessThanOrEqual(-S + 1e-6); // stopped in front of the block (its face is at -0.5 S, plus the half size)
+    expect(end.x).toBeGreaterThan(-S - 0.05);
+  });
+
+  it("slides along the face when the target is diagonal", () => {
+    const end = sweepMove({ x: -3 * S, y: lowY, z: -0.2 * S }, { x: 0, y: lowY, z: 3 * S }, half, [wall], lowY);
+    expect(end.z).toBeGreaterThan(0.5 * S); // went around, not through
+  });
+
+  it("rises along the side of a tower and only then goes on top", () => {
+    const aim = { x: 0, y: RUG_H + S + 0.5 * S + HOVER_GAP, z: 0 }; // straight above the block
+    const end = sweepMove({ x: -1.5 * S, y: lowY, z: 0 }, aim, half, [wall], lowY);
+    expect(end.y).toBeGreaterThan(lowY); // it climbed
+    expect(Math.abs(end.x)).toBeGreaterThanOrEqual(S - 0.01); // but is still beside the block, not inside it
+  });
+
+  it("is not held by a block it already overlaps, nor by a block resting on top of it", () => {
+    const inside = sweepMove({ x: 0.2, y: RUG_H + 0.5 * S, z: 0 }, { x: 3 * S, y: RUG_H + 0.5 * S, z: 0 }, half, [wall], lowY);
+    expect(inside.x).toBeCloseTo(3 * S, 6);
+    const above = cubeAt(2, 3 * S, RUG_H + 1.5 * S, 0);
+    const free = sweepMove({ x: 3 * S, y: lowY, z: 0 }, { x: 4 * S, y: lowY, z: 0 }, half, [above], lowY);
+    expect(free.x).toBeCloseTo(4 * S, 6);
+  });
+});
+
+describe("stable fits on a tower", () => {
+  const base = cubeAt(1, 0, RUG_H + 0.5 * S, 0);
+  const onTop = RUG_H + S + 0.5 * S + HOVER_GAP;
+
+  it("never magnet-locks a cube onto the edge of another (its centre would be over the edge and it would tip off)", () => {
+    for (let x = 0; x <= 0.9 * S; x += 0.02) {
+      const r = computeCarry({ kind: "cube", x, z: 0, yaw: 0, heldY: onTop, stickyId: 1, others: [base] });
+      if (r.supportId === 1) expect(Math.abs(r.rest?.x ?? r.x)).toBeLessThanOrEqual(0.5 * S - SAFE_EDGE * S + 1e-6);
+    }
+  });
+
+  it("keeps a long brick on a cube centred, never hanging by its end", () => {
+    const r = computeCarry({ kind: "brick", x: 0.4 * S, z: 0, yaw: 0, heldY: onTop, stickyId: 1, others: [base] });
+    expect(Math.abs(r.rest?.x ?? r.x)).toBeLessThanOrEqual(0.5 * S - SAFE_EDGE * S + 1e-6);
+  });
+
+  it("allows the half-brick offset where the centre is still well over the support", () => {
+    const brick = { id: 3, kind: "brick" as const, x: 0, y: RUG_H + 0.5 * S, z: 0, q: id };
+    const r = computeCarry({ kind: "cube", x: 0.5 * S, z: 0, yaw: 0, heldY: onTop, stickyId: 3, others: [brick] });
+    expect(r.x).toBeCloseTo(0.5 * S, 6);
+  });
+
+  it("on release it goes to the stable spot, but while carrying it follows the finger continuously (no hop at the edge)", () => {
+    const fingerFar = computeCarry({ kind: "cube", x: 0.8 * S, z: 0, yaw: 0, heldY: onTop, stickyId: 1, others: [base] });
+    expect(fingerFar.rest!.x).toBeLessThanOrEqual(0.5 * S - SAFE_EDGE * S + 1e-6); // stays up when put down
+    expect(fingerFar.x).toBeGreaterThan(fingerFar.rest!.x); // but the carried block is not yanked back
+    let prev: number | null = null, worst = 0;
+    for (let x = 0; x <= 2.2 * S; x += 0.01) {
+      const r = computeCarry({ kind: "cube", x, z: 0, yaw: 0, heldY: onTop, stickyId: 1, others: [base] });
+      if (prev !== null) worst = Math.max(worst, Math.abs(r.x - prev));
+      prev = r.x;
+    }
+    expect(worst).toBeLessThan(0.08); // also across the point where the block loses its support
+  });
+
+  it("a carried stack floats hardly at all above the rug", () => {
+    const r = computeCarry({ kind: "cube", x: 4 * S, z: 0, yaw: 0, heldY: 2, stickyId: null, others: [], lift: 0.05 });
+    expect(r.y).toBeCloseTo(RUG_H + 0.5 * S + 0.05);
+  });
+});
+
+describe("spawning in view", () => {
+  it("appears around the anchor, only where accepted, and inside the rim", () => {
+    const accept = (x: number, z: number) => Math.abs(x - 3) < 2.5 && Math.abs(z + 2) < 2.5;
+    for (let i = 0; i < 20; i++) {
+      const [x, y, z] = pickSpawn("cube", [], Math.random, { anchor: { x: 3, z: -2 }, accept });
+      expect(accept(x, z)).toBe(true);
+      expect(Math.hypot(x, z)).toBeLessThan(PLAY_AREA - 1);
+      expect(y).toBeGreaterThan(RUG_H + S);
+    }
+  });
+
+  it("falls back to the anchor when nothing is acceptable, never outside the rim", () => {
+    const [x, , z] = pickSpawn("cube", [], Math.random, { anchor: { x: 40, z: 0 }, accept: () => false });
+    expect(Math.hypot(x, z)).toBeLessThan(PLAY_AREA);
   });
 });

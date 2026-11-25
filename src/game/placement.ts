@@ -1,8 +1,8 @@
 // Pure placement maths for carrying and stacking blocks. No React, no three.js, no physics engine:
 // everything is plain numbers so it can be unit-tested.
 import {
-  BLOCK_SCALE, ARENA_MARGIN, CONTACT_EPS, DRAG_LIFT, HOVER_GAP, PLAY_AREA, RUG_H, SNAP_EDGE_BIAS, SNAP_HARD, SNAP_RANGE, SNAP_STEP,
-  SPAWN_HEIGHT, SUPPORT_KEEP, SUPPORT_OVERLAP, TILT_OK, halfExtents, shapeDef, type ShapeKind,
+  BLOCK_SCALE, ARENA_MARGIN, CONTACT_EPS, DRAG_LIFT, HOVER_GAP, PLAY_AREA, RUG_H, SAFE_EDGE, SNAP_EDGE_BIAS, SNAP_HARD, SNAP_RANGE, SNAP_STEP,
+  SPAWN_HEIGHT, SPAWN_RADIUS, SUPPORT_KEEP, SUPPORT_OVERLAP, TILT_OK, halfExtents, shapeDef, type ShapeKind,
 } from "./shapes";
 
 export const HALF_PI = Math.PI / 2;
@@ -44,6 +44,8 @@ export interface CarryInput {
   yaw: number;
   /** Current centre height of the carried block. */
   heldY: number;
+  /** How far above the rug a block on the floor floats while carried (a block with a stack on it floats hardly at all). */
+  lift?: number;
   /** Support chosen on the previous frame: it is kept with less overlap (hysteresis, no flicker at the edge). */
   stickyId: number | null;
   others: Other[];
@@ -59,6 +61,11 @@ export interface CarryResult {
   supportId: number | null;
   /** True when the magnet locked the block onto the grid of a flat top. */
   snapped: boolean;
+  /**
+   * Where to put the block down on a tower: like x / z, but with the centre of mass pulled over the support. While
+   * carrying, the block follows the finger smoothly even past the edge; on release it goes here, so it stays up.
+   */
+  rest?: { x: number; z: number };
 }
 
 /**
@@ -67,6 +74,7 @@ export interface CarryResult {
  */
 export function computeCarry(input: CarryInput): CarryResult {
   const { kind, x, z, heldY, others, stickyId } = input;
+  const lift = input.lift ?? DRAG_LIFT;
   const [hx, hy, hz] = halfExtents(kind);
   const yawPref = input.yaw;
 
@@ -110,7 +118,7 @@ export function computeCarry(input: CarryInput): CarryResult {
   }
 
   if (!best) {
-    const r: CarryResult = { x, z, y: RUG_H + hy + DRAG_LIFT, yaw: gy, top: RUG_H, supportId: null, snapped: false };
+    const r: CarryResult = { x, z, y: RUG_H + hy + lift, yaw: gy, top: RUG_H, supportId: null, snapped: false };
     return finish(r, kind, heldY, others);
   }
 
@@ -131,11 +139,19 @@ export function computeCarry(input: CarryInput): CarryResult {
   const [ohx, , ohz] = halfExtents(o.kind);
   const ax = snapAxis(lx0, swap ? hz : hx, ohx, true);
   const az = snapAxis(lz0, swap ? hx : hz, ohz, true);
-  return finish({
+  const r0: CarryResult = {
     x: o.x + c * ax.v + s * az.v,
     z: o.z - s * ax.v + c * az.v,
     y, yaw, top: best.top, supportId: o.id, snapped: ax.locked && az.locked,
-  }, kind, heldY, others);
+    rest: { x: o.x + c * ax.rest + s * az.rest, z: o.z - s * ax.rest + c * az.rest },
+  };
+  const out = finish(r0, kind, heldY, others);
+  // If a neighbour or the rim moved the block, the stable spot is no longer valid: only the plain position counts.
+  if (out.x !== r0.x || out.z !== r0.z) {
+    const { rest: _unused, ...plain } = out;
+    return plain;
+  }
+  return out;
 }
 
 /**
@@ -144,10 +160,15 @@ export function computeCarry(input: CarryInput): CarryResult {
  * (carried edge level with the other block's edge) and, on a top, the half-cube grid. Exact inside the inner
  * zone, easing off to nothing at the edge of the range, so the block slides into place instead of jumping.
  */
-function snapAxis(l: number, h: number, s: number, grid: boolean): { v: number; locked: boolean } {
+function snapAxis(l: number, h: number, s: number, onTop: boolean): { v: number; locked: boolean; rest: number } {
   const range = SNAP_RANGE * BLOCK_SCALE;
+  // On a top the centre of mass must stay over the support: a block whose centre sits on (or beyond) the edge tips
+  // off, and the higher the tower, the sooner. Candidates and the result are therefore kept inside this limit.
+  const lim = onTop ? Math.max(0, s - SAFE_EDGE * BLOCK_SCALE) : Infinity;
+  const grid = onTop;
   let bestC = l, bestScore = Infinity, bestD = Infinity;
   const consider = (c: number, bias: number) => {
+    if (Math.abs(c) > lim + 1e-9) return; // would not stay on the support
     const d = Math.abs(l - c);
     if (d >= range) return; // out of reach: not a candidate
     if (d * bias < bestScore) { bestScore = d * bias; bestC = c; bestD = d; }
@@ -159,12 +180,25 @@ function snapAxis(l: number, h: number, s: number, grid: boolean): { v: number; 
     const step = SNAP_STEP * BLOCK_SCALE;
     consider(Math.round(l / step) * step, 1);
   }
-  if (bestScore === Infinity) return { v: l, locked: false };
+  const clampSafe = (v: number) => Math.max(-lim, Math.min(lim, v));
+  // While carrying, the pull towards the safe zone eases in between `lim` and the point where the block loses its
+  // support entirely (zoneEnd): continuous, so the block never hops when the finger leaves the tower.
+  const zoneEnd = s + h; // the block loses its support when it has left the top completely
+  const soft = (v: number) => {
+    const a = Math.abs(v);
+    if (a <= lim) return v;
+    const t = Math.min(1, (a - lim) / Math.max(1e-6, zoneEnd - lim));
+    const w = t * t * (3 - 2 * t);
+    const hard = Math.sign(v) * lim;
+    return hard + (v - hard) * w;
+  };
+  if (bestScore === Infinity) return { v: soft(l), locked: false, rest: clampSafe(l) };
   const inner = range * SNAP_HARD;
-  if (bestD <= inner) return { v: bestC, locked: true };
+  if (bestD <= inner) return { v: bestC, locked: true, rest: bestC };
   const t = (range - bestD) / (range - inner); // 1 -> 0 across the easing zone
   const w = t * t * (3 - 2 * t);
-  return { v: l + (bestC - l) * w, locked: false };
+  const v = l + (bestC - l) * w;
+  return { v: soft(v), locked: false, rest: clampSafe(v) };
 }
 
 function finish(r: CarryResult, kind: ShapeKind, heldY: number, others: Other[]): CarryResult {
@@ -242,19 +276,33 @@ function separate(r: CarryResult, kind: ShapeKind, heldY: number, others: Other[
       if (o.y - ay >= heldY) continue; // resting on / above the carried block
       if (o.y + ay <= lo + 0.02 || o.y - ay >= hi) continue; // not level with it
       const ox = fx + ax - Math.abs(px - o.x), oz = fz + az - Math.abs(pz - o.z); // > 0: overlapping on that axis
+      // After the first pass only real overlaps are resolved: the soft pull must not be applied again and again.
+      if (pass > 0 && !(ox > 0 && oz > 0)) continue;
       let axis: "x" | "z" | null = null;
       if (ox > 0 && oz > 0) axis = ox < oz ? "x" : "z";
       else if (ox > 0 && oz > -range) axis = "z";
       else if (oz > 0 && ox > -range) axis = "x";
       if (!axis) continue;
+      // Overlapping: pushed out to exact contact. Merely near: pulled in with a strength that is full close to the
+      // neighbour and fades to nothing at the edge of the range, so the pull never makes the block jump.
+      const overlapping = ox > 0 && oz > 0;
+      const gap = Math.max(0, -(axis === "x" ? ox : oz));
+      const inner = range * SNAP_HARD;
+      let w = 1;
+      if (!overlapping && gap > inner) {
+        const t = Math.max(0, (range - gap) / (range - inner));
+        w = t * t * (3 - 2 * t);
+      }
       if (axis === "x") {
-        px = o.x + (px >= o.x ? 1 : -1) * (fx + ax + CONTACT_EPS); // faces exactly touching
+        px = o.x + (px >= o.x ? 1 : -1) * (fx + ax + CONTACT_EPS + gap * (1 - w)); // faces touching (or nearly)
         const a = snapAxis(pz - o.z, fz, az, false);
-        pz = o.z + a.v; locked = a.locked;
+        pz = o.z + (pz - o.z) + (a.v - (pz - o.z)) * w;
+        locked = a.locked && w === 1;
       } else {
-        pz = o.z + (pz >= o.z ? 1 : -1) * (fz + az + CONTACT_EPS);
+        pz = o.z + (pz >= o.z ? 1 : -1) * (fz + az + CONTACT_EPS + gap * (1 - w));
         const a = snapAxis(px - o.x, fx, ax, false);
-        px = o.x + a.v; locked = a.locked;
+        px = o.x + (px - o.x) + (a.v - (px - o.x)) * w;
+        locked = a.locked && w === 1;
       }
       any = moved = true;
     }
@@ -276,23 +324,95 @@ export function overlapsOther(kind: ShapeKind, x: number, y: number, z: number, 
   return false;
 }
 
-/** A free spot to drop a new block: away from the others, never on top of a tower if avoidable. */
-export function pickSpawn(kind: ShapeKind, others: Other[], rand: () => number = Math.random): [number, number, number] {
+export interface Vec3 { x: number; y: number; z: number }
+
+/**
+ * Moves a box (half extents `half`) from `from` towards `to` WITHOUT ever entering another block: it stops at the
+ * first contact and slides along it, like a character controller. The carried block does not collide physically
+ * (it must never shove the castle), so this is what stops it passing through other blocks: it rises along a tower
+ * until it clears the top, and a quick swipe across a block cannot jump to the far side. Blocks resting on / above
+ * the carried one (its passengers) are not obstacles. A block it already overlaps at the start does not hold it.
+ */
+export function sweepMove(from: Vec3, to: Vec3, half: [number, number, number], others: Other[], heldY: number): Vec3 {
+  const boxes: { c: [number, number, number]; e: [number, number, number] }[] = [];
+  for (const o of others) {
+    const [ax, ay, az] = worldHalf(o.kind, o.q);
+    if (o.y - ay >= heldY) continue;
+    boxes.push({ c: [o.x, o.y, o.z], e: [ax + half[0], ay + half[1], az + half[2]] });
+  }
+  const p: [number, number, number] = [from.x, from.y, from.z];
+  const rem: [number, number, number] = [to.x - from.x, to.y - from.y, to.z - from.z];
+  const EPS = 1e-3, SKIN = 0.002;
+  for (let iter = 0; iter < 3; iter++) {
+    const len = Math.hypot(rem[0], rem[1], rem[2]);
+    if (len < 1e-6) break;
+    let tHit = 1, axis = -1;
+    for (const b of boxes) {
+      const d: [number, number, number] = [p[0] - b.c[0], p[1] - b.c[1], p[2] - b.c[2]];
+      if (Math.abs(d[0]) < b.e[0] - EPS && Math.abs(d[1]) < b.e[1] - EPS && Math.abs(d[2]) < b.e[2] - EPS) continue;
+      let t0 = -Infinity, t1 = Infinity, ax = -1, miss = false;
+      for (let i = 0; i < 3; i++) {
+        const ri = rem[i]!, di = d[i]!, ei = b.e[i]!;
+        if (Math.abs(ri) < 1e-9) {
+          if (Math.abs(di) >= ei) { miss = true; break; }
+          continue;
+        }
+        let a = (-ei - di) / ri, c = (ei - di) / ri;
+        if (a > c) { const tmp = a; a = c; c = tmp; }
+        if (a > t0) { t0 = a; ax = i; }
+        if (c < t1) t1 = c;
+      }
+      if (miss || ax < 0 || t0 > t1 || t0 < -1e-6 || t0 >= 1) continue;
+      if (t0 < tHit) { tHit = Math.max(0, t0); axis = ax; }
+    }
+    if (axis < 0) {
+      for (let i = 0; i < 3; i++) p[i] = p[i]! + rem[i]!;
+      break;
+    }
+    const adv = Math.max(0, tHit - SKIN / len);
+    for (let i = 0; i < 3; i++) p[i] = p[i]! + rem[i]! * adv;
+    for (let i = 0; i < 3; i++) rem[i] = rem[i]! * (1 - tHit);
+    rem[axis] = 0; // slide along the face that was hit
+  }
+  return { x: p[0], y: p[1], z: p[2] };
+}
+
+export interface SpawnOptions {
+  /** Middle of what the camera shows (a floor point): new blocks appear around it. */
+  anchor?: { x: number; z: number };
+  /** True for floor points that are comfortably on screen (not under the tray, not at the edge). */
+  accept?: (x: number, z: number) => boolean;
+}
+
+/** A free spot to drop a new block: in view, near the middle of it, away from the others, never on a tower if avoidable. */
+export function pickSpawn(kind: ShapeKind, others: Other[], rand: () => number = Math.random, opts: SpawnOptions = {}): [number, number, number] {
   const [hx, hy, hz] = halfExtents(kind);
   const need = Math.hypot(hx, hz) + 0.3;
-  const R = PLAY_AREA * 0.55;
+  const cx = opts.anchor?.x ?? 0, cz = opts.anchor?.z ?? 0;
+  const R = opts.anchor ? BLOCK_SCALE * 2.6 : PLAY_AREA * SPAWN_RADIUS;
+  const inner = PLAY_AREA - 1.5 - Math.hypot(hx, hz); // stay well inside the rim
   let bestPos: [number, number] = [0, 0];
+  let found = false;
   let bestClear = -Infinity;
-  for (let i = 0; i < 40; i++) {
+  for (let i = 0; i < 60; i++) {
     const a = rand() * Math.PI * 2, r = Math.sqrt(rand()) * R;
-    const px = Math.cos(a) * r, pz = Math.sin(a) * r;
+    let px = cx + Math.cos(a) * r, pz = cz + Math.sin(a) * r;
+    const d = Math.hypot(px, pz);
+    if (d > inner) { px *= inner / d; pz *= inner / d; }
+    if (opts.accept && !opts.accept(px, pz)) continue;
     let clear = Infinity;
     for (const o of others) {
       const [ohx, , ohz] = halfExtents(o.kind);
       clear = Math.min(clear, Math.hypot(px - o.x, pz - o.z) - Math.hypot(ohx, ohz));
     }
-    if (clear > bestClear) { bestClear = clear; bestPos = [px, pz]; }
+    if (clear > bestClear) { bestClear = clear; bestPos = [px, pz]; found = true; }
     if (clear >= need) break;
+  }
+  if (!found) {
+    // nothing acceptable on screen: the anchor itself (or the middle of the rug)
+    const d = Math.hypot(cx, cz);
+    bestPos = d > inner ? [cx * inner / d, cz * inner / d] : [cx, cz];
+    bestClear = -Infinity;
   }
   // If the room is crowded, start above whatever is below so it never spawns inside another block.
   let y = RUG_H + hy + SPAWN_HEIGHT;

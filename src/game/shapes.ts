@@ -83,7 +83,9 @@ export const ARENA_MARGIN = 0.15;
 export const GRAVITY = 9.81 * SIZE_RATIO;
 
 // ---- Feel constants ----
-export const SPAWN_HEIGHT = 3.2; // centre height of a new block above the rug (was 7: too hard a landing)
+export const SPAWN_HEIGHT = 2.4; // centre height of a new block above the rug (a soft landing: it must not shake the castle)
+/** New blocks appear around the middle of what the camera shows, within this fraction of the arena radius. */
+export const SPAWN_RADIUS = 0.4;
 export const DRAG_LIFT = 0.3; // carried blocks float this far above the rug
 export const HOVER_GAP = 0.06; // carried blocks float this far above a tower top (tiny, soft drop)
 export const CARRY_GAIN = 14; // 1/s: how eagerly a carried block follows the finger
@@ -95,11 +97,31 @@ export const THROW_MIN = 3; // gesture speed (u/s) at release on the floor: slow
 export const FLICK_SPEED = 6;
 export const THROW_MAX = 24;
 
+// ---- Stable building ----
+/** A carried block's centre of mass is kept at least this far (in block units) inside the edge of the top it lands on. */
+export const SAFE_EDGE = 0.12;
+/** A released block is put down this far above its support: no drop, so no impact that could shake a tall stack. */
+export const REST_GAP = 0.004;
+/** Largest acceleration (as a fraction of gravity) for carrying a block that has a stack on it, divided by the stack height. */
+export const LOAD_ACCEL = 0.6;
+
+// ---- Camera ----
+export const CAMERA_HOME: [number, number, number] = [10.5, 20, 18]; // ~40° above the rug: aiming stays accurate
+export const CAMERA_TARGET: [number, number, number] = [0, 1.5, 0];
+export const CAMERA_FOV = 45;
+export const CAMERA_MAX_POLAR = 1.2; // rad from straight down: never a near-horizontal view (the finger ray gets useless)
+export const CAMERA_MIN_POLAR = 0.3;
+/** Framing: the view always covers a ball of at least this radius around the blocks, plus the padding. */
+export const FRAME_MIN_RADIUS = 5.5;
+export const FRAME_PAD = 1.5;
+export const FRAME_DIST_MIN = 10;
+export const FRAME_DIST_MAX = 48;
+
 // ---- Smart building ----
 /** Fraction of the carried block's footprint that must be over another block to count as "on top of it". */
 export const SUPPORT_OVERLAP = 0.22;
-/** Once on a support, it is kept down to this overlap so the block does not flicker at the edge. */
-export const SUPPORT_KEEP = 0.08;
+/** Once on a support it is kept until the block has left the top completely (any overlap at all): it is then carried clear of the tower, never dropped beside it with a hop. */
+export const SUPPORT_KEEP = 0.001;
 /** Support up-vector must be at least this vertical (cos ≈ 16°) to count as a level surface. */
 export const TILT_OK = 0.96;
 /** Magnet grid on a flat top, in block units (0.5 = half a cube). */

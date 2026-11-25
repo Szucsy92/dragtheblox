@@ -1,4 +1,4 @@
-import { CARRY_GAIN, CARRY_MAX, THROW_MIN, THROW_MAX, TILT_MAX, TILT_PER_SPEED } from './shapes';
+import { CARRY_GAIN, CARRY_MAX, GRAVITY, LOAD_ACCEL, THROW_MIN, THROW_MAX, TILT_MAX, TILT_PER_SPEED } from './shapes';
 import { worldHalf, type Other } from './placement';
 
 export interface Velocity { x: number; y: number; z: number }
@@ -68,4 +68,23 @@ export function leanFor(v: Velocity, cap = TILT_MAX): { x: number; z: number; an
   const speed = Math.hypot(v.x, v.z);
   if (speed < 0.2) return { x: 0, z: 0, angle: 0 };
   return { x: v.z / speed, z: -v.x / speed, angle: Math.min(cap, TILT_MAX, speed * TILT_PER_SPEED) };
+}
+
+/**
+ * Largest acceleration with which a block carrying a stack of `passengers` blocks may be moved. A stack of n blocks
+ * tips when pushed harder than about g / n (centre of mass n/2 blocks above the base, half a block from its edge),
+ * so this scales with 1 / n: the taller the tower, the more carefully it is moved.
+ */
+export function loadAccel(passengers: number): number {
+  return Math.min(0.8 * GRAVITY, (LOAD_ACCEL * GRAVITY) / Math.max(1, passengers));
+}
+
+/** Steps the commanded velocity `cmd` towards `want`, changing it by at most `maxAccel * dt`. */
+export function limitAccel(cmd: Velocity, want: Velocity, maxAccel: number, dt: number): Velocity {
+  const dx = want.x - cmd.x, dy = want.y - cmd.y, dz = want.z - cmd.z;
+  const len = Math.hypot(dx, dy, dz);
+  const lim = maxAccel * dt;
+  if (len <= lim || len < 1e-9) return { x: want.x, y: want.y, z: want.z };
+  const k = lim / len;
+  return { x: cmd.x + dx * k, y: cmd.y + dy * k, z: cmd.z + dz * k };
 }

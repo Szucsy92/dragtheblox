@@ -1,4 +1,5 @@
 # Roadmap
+- [ ] Tower stability and carry feel (stable rest spot, no drop, path-clipped carrying, careful tower carrying, solver iterations, camera framing, in-view spawn): the logic is unit-tested, the physics feel is not: play-test tall towers and a slow tower drag on a device and tune `SAFE_EDGE`, `LOAD_ACCEL`, `FRAME_MIN_RADIUS`, `numSolverIterations`.
 - [ ] Android offline kiosk app (`native/android`): run the workflow once, then verify on a real device that the bundled game runs without internet, kiosk pinning, the update dialog and the signing branch. The Kotlin sources, the offline web build and the workflows were written without compiling or running them.
 - [ ] Enlarge the actual blocks by 25%, remove hemisphere and cone from the tray, and verify selection and physics.
 - [x] Double the tray previews in one horizontally scrollable row, retaining the original dimensional drawings without individual cards; verify touch selection.

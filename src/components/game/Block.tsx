@@ -172,10 +172,10 @@ export const Block = memo(function Block({ data, onGrab, active }: Props) {
       position={data.spawn}
       ccd
       colliders={colliders}
-      friction={0.9}
+      friction={1}
       restitution={0}
       collisionGroups={GROUP_BLOCK}
-      linearDamping={0.15}
+      linearDamping={0.1}
       angularDamping={0.8}
       onContactForce={(p) => {
         // Force per mass, and only a sudden jump counts: heavy blocks / tall stacks resting steadily stay quiet.

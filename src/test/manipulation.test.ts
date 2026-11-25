@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import { supportedAbove, gestureVelocity, throwVelocity, carryVelocity, leanFor } from '@/game/manipulation';
-import { BLOCK_SCALE, PLAY_AREA, GROUP_BLOCK, GROUP_HELD, GROUP_PASSENGER, GROUP_GROUND, CARRY_MAX, FLICK_SPEED, THROW_MIN, TILT_MAX } from '@/game/shapes';
+import { supportedAbove, gestureVelocity, throwVelocity, carryVelocity, leanFor, limitAccel, loadAccel } from '@/game/manipulation';
+import { BLOCK_SCALE, GRAVITY, PLAY_AREA, GROUP_BLOCK, GROUP_HELD, GROUP_PASSENGER, GROUP_GROUND, CARRY_MAX, FLICK_SPEED, THROW_MIN, TILT_MAX } from '@/game/shapes';
 import type { Other } from '@/game/placement';
 
 // Rapier's rule: two colliders touch when each one's membership meets the other's filter.
@@ -53,3 +53,28 @@ describe('physical manipulation', () => {
     expect(throwVelocity({ x: 0.5, y: 0, z: 0 })).toBeNull();
   });
 });
+
+describe('careful tower carrying', () => {
+  it('the taller the tower on the carried block, the gentler it must be moved', () => {
+    expect(loadAccel(1)).toBeGreaterThan(loadAccel(2));
+    expect(loadAccel(2)).toBeGreaterThan(loadAccel(4));
+    expect(loadAccel(1)).toBeLessThan(GRAVITY); // always below what friction could hold
+  });
+
+  it('limits how fast the commanded velocity can change, so the stack is not jerked', () => {
+    const dt = 1 / 60;
+    const a = loadAccel(3);
+    const v = limitAccel({ x: 0, y: 0, z: 0 }, { x: 10, y: 0, z: 0 }, a, dt);
+    expect(v.x).toBeCloseTo(a * dt, 9);
+    // and it arrives eventually
+    let cmd = { x: 0, y: 0, z: 0 };
+    for (let i = 0; i < 600; i++) cmd = limitAccel(cmd, { x: 2, y: 0, z: 0 }, a, dt);
+    expect(cmd.x).toBeCloseTo(2, 9);
+  });
+
+  it('passes a small change straight through', () => {
+    const v = limitAccel({ x: 1, y: 0, z: 0 }, { x: 1.001, y: 0, z: 0 }, 5, 1 / 60);
+    expect(v.x).toBeCloseTo(1.001, 9);
+  });
+});
+

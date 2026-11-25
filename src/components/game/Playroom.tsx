@@ -2,15 +2,17 @@ import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "rea
 import * as THREE from "three";
 import { Canvas, useFrame, useThree, type ThreeEvent } from "@react-three/fiber";
 import { Environment, Lightformer, OrbitControls, ContactShadows } from "@react-three/drei";
-import { Physics } from "@react-three/rapier";
+import { Physics, useRapier } from "@react-three/rapier";
 import { Trash2, RotateCw } from "lucide-react";
 import {
   BLOCK_SCALE, SELECTABLE_SHAPES, TOY_COLORS, shapeDef, halfExtents, type BlockData, type ShapeKind,
   GRAVITY, ROT_GAIN, ROT_MAX, THROW_MIN, FLICK_SPEED,
-  RUG_H, DRAG_LIFT, PLAY_AREA, RELEASE_KEEP,
+  RUG_H, DRAG_LIFT, PLAY_AREA, RELEASE_KEEP, REST_GAP,
+  CAMERA_HOME, CAMERA_TARGET, CAMERA_FOV, CAMERA_MAX_POLAR, CAMERA_MIN_POLAR, FRAME_DIST_MAX,
 } from "@/game/shapes";
-import { clampArena, computeCarry, overlapsOther, pickBlock, pickSpawn, worldHalf, HALF_PI } from "@/game/placement";
-import { carryVelocity, gestureVelocity, leanFor, supportedAbove, throwVelocity, type MotionSample } from "@/game/manipulation";
+import { frameFor, type FrameBox } from "@/game/framing";
+import { clampArena, computeCarry, overlapsOther, pickBlock, pickSpawn, sweepMove, worldHalf, HALF_PI, type SpawnOptions } from "@/game/placement";
+import { carryVelocity, gestureVelocity, leanFor, limitAccel, loadAccel, supportedAbove, throwVelocity, type MotionSample } from "@/game/manipulation";
 import { bodies, kinds, poseOf, snapshot, setCarried, setPassenger } from "@/game/registry";
 import { sfx, unlockAudio } from "@/game/audio";
 import { Block } from "./Block";
@@ -30,7 +32,9 @@ interface DragState {
   x0: number;
   y0: number;
   /** Last computed target pose (used to place the block cleanly on release). */
-  last: { x: number; y: number; z: number; yaw: number; snapped: boolean } | null;
+  last: { x: number; y: number; z: number; yaw: number; top: number; snapped: boolean; rest: { x: number; z: number } | null } | null;
+  /** Commanded carry velocity (rate-limited while a stack rides on the block). */
+  cmd: { x: number; y: number; z: number };
   /** Smoothed carry velocity (for the lean) and the previous magnet state (for the haptic tick). */
   vx: number;
   vz: number;
@@ -89,7 +93,7 @@ function DragController({ drag, onAbort }: { drag: React.MutableRefObject<DragSt
     [],
   );
 
-  const frame = () => {
+  const frame = (dt: number) => {
     const rect = rectRef.current, round = roundRef.current;
     const hide = () => { if (rect) rect.visible = false; if (round) round.visible = false; };
     const d = drag.current;
@@ -138,7 +142,8 @@ function DragController({ drag, onAbort }: { drag: React.MutableRefObject<DragSt
       d.offZ = oz;
       const r0 = body.rotation();
       eul.setFromQuaternion(curQ.set(r0.x, r0.y, r0.z, r0.w), "YXZ");
-      d.yaw = Math.round(eul.y / HALF_PI) * HALF_PI; // straighten to the 90° grid
+      // Straighten to the 90° grid, except under a stack: turning the base would twist the tower.
+      d.yaw = d.load.length ? eul.y : Math.round(eul.y / HALF_PI) * HALF_PI;
     }
 
     if (!d.started) return hide();
@@ -148,14 +153,33 @@ function DragController({ drag, onAbort }: { drag: React.MutableRefObject<DragSt
       ? clampArena({ x: aimX, z: aimZ, y: carryLevel, yaw: d.yaw, top: RUG_H, supportId: null, snapped: false }, kind)
       : computeCarry({
           kind, x: aimX, z: aimZ, yaw: d.yaw, heldY: t.y, stickyId: pick ? pick.id : d.sticky, others,
+          // a block with a stack on it floats hardly at all: the lift-off would be a jerk for the tower
+          ...(d.load.length ? { lift: 0.05 } : {}),
         });
-    d.last = { x: res.x, y: res.y, z: res.z, yaw: res.yaw, snapped: res.snapped };
+    // Under a stack the base keeps its own yaw (aligning it to the grid would turn the whole tower).
+    const yawNow = d.load.length ? d.yaw : res.yaw;
+    d.last = { x: res.x, y: res.y, z: res.z, yaw: yawNow, top: res.top, snapped: res.snapped, rest: res.rest ?? null };
     if (res.snapped && !d.wasSnapped) buzz(8); // a tiny tick when the block clicks into place
     d.wasSnapped = res.snapped;
     d.sticky = res.supportId;
 
-    // Position: steer by velocity (capped), never teleport. The passengers are carried by contact only.
-    const cv = carryVelocity({ x: res.x - t.x, y: res.y - t.y, z: res.z - t.z });
+    // The carried block does not collide with the castle (it must never shove it), so the path itself is kept clear:
+    // it stops at the face of another block, slides along it, and rises along a tower until it clears the top.
+    const [hxk, , hzk] = halfExtents(kind);
+    const cy = Math.abs(Math.cos(yawNow)), sy = Math.abs(Math.sin(yawNow));
+    const reach = sweepMove(
+      { x: t.x, y: t.y, z: t.z },
+      { x: res.x, y: res.y, z: res.z },
+      [cy * hxk + sy * hzk, hyHeld, sy * hxk + cy * hzk],
+      others,
+      t.y,
+    );
+
+    // Position: steer by velocity (capped), never teleport. With a stack on the block the velocity may only change
+    // as fast as the stack can take (friction carries it; a jerk, or a tall stack pushed hard, tips it over).
+    const want = carryVelocity({ x: reach.x - t.x, y: reach.y - t.y, z: reach.z - t.z });
+    const cv = d.load.length ? limitAccel(d.cmd, want, loadAccel(d.load.length), dt) : want;
+    d.cmd = cv;
     body.setLinvel(cv, true);
     d.vx += (cv.x - d.vx) * 0.2;
     d.vz += (cv.z - d.vz) * 0.2;
@@ -164,7 +188,7 @@ function DragController({ drag, onAbort }: { drag: React.MutableRefObject<DragSt
     // Orientation: turn upright and to the target yaw by angular velocity along the shortest path.
     const r = body.rotation();
     curQ.set(r.x, r.y, r.z, r.w);
-    tgtQ.setFromAxisAngle(UP, res.yaw);
+    tgtQ.setFromAxisAngle(UP, yawNow);
     // Dynamics: the carried block leans into the motion (not with a passenger stack on it, not while the
     // magnet holds it level, and only slightly right above a support).
     if (d.load.length === 0 && !res.snapped) {
@@ -189,8 +213,8 @@ function DragController({ drag, onAbort }: { drag: React.MutableRefObject<DragSt
     if (rect) rect.visible = !def.round;
     if (round) round.visible = def.round;
     if (m) {
-      m.position.set(res.x, res.top + 0.012, res.z);
-      m.rotation.set(-Math.PI / 2, res.yaw, 0, "YXZ");
+      m.position.set(res.rest?.x ?? res.x, res.top + 0.012, res.rest?.z ?? res.z); // where it will be put down
+      m.rotation.set(-Math.PI / 2, yawNow, 0, "YXZ");
       m.scale.set(hx * 2, hz * 2, 1);
     }
     markMat.color.copy(res.snapped ? MARK_SNAP : MARK_FREE);
@@ -198,9 +222,9 @@ function DragController({ drag, onAbort }: { drag: React.MutableRefObject<DragSt
   };
 
   // An exception inside the frame loop would freeze the whole game: drop the drag instead.
-  useFrame(() => {
+  useFrame((_, delta) => {
     try {
-      frame();
+      frame(Math.min(delta, 0.05));
     } catch (err) {
       console.error("Drag aborted:", err);
       onAbort();
@@ -256,19 +280,21 @@ function Keeper() {
 }
 
 /**
- * Keeps the whole castle in view: looks at the middle of the highest tower and backs the camera off when the
- * tower (or the block carried above it) gets tall. It never fights the player: it stands still while the
- * player is orbiting/zooming, and the distance the player chose is restored when the tower is gone.
+ * Smart camera: frames the whole castle and whatever is being carried. It looks at the middle of the blocks and
+ * picks the distance from their size and spread (`frameFor`): it zooms IN while there are only a few blocks (more
+ * so on a wide screen), and OUT as the tower gets tall or the blocks spread out. It never fights the player: it
+ * stands still while they orbit or zoom, and a manual zoom is kept as a ratio to what the framing would choose.
  */
 function AutoFrame({ controls, drag, orbiting }: {
   controls: React.MutableRefObject<any>;
   drag: React.MutableRefObject<DragState | null>;
   orbiting: React.MutableRefObject<boolean>;
 }) {
-  const { camera } = useThree();
-  const userDist = useRef<number | null>(null);
-  const autoDist = useRef(0);
+  const { camera, size } = useThree();
+  const userScale = useRef(1);
+  const lastFit = useRef(0);
   const wasOrbiting = useRef(false);
+  const started = useRef(false);
 
   useFrame((_, delta) => {
     const ctl = controls.current;
@@ -276,45 +302,65 @@ function AutoFrame({ controls, drag, orbiting }: {
     const tgt = ctl.target as THREE.Vector3;
     if (!Number.isFinite(camera.position.x + camera.position.y + camera.position.z + tgt.x + tgt.y + tgt.z)) {
       // Recover from a poisoned camera (a black, frozen screen): back to the start view.
-      camera.position.set(14, 14, 22);
-      tgt.set(0, 1.5, 0);
-      userDist.current = null;
-      return;
-    }
-    const dist = camera.position.distanceTo(tgt);
-    if (userDist.current === null) { userDist.current = dist; autoDist.current = dist; }
-    if (orbiting.current) { wasOrbiting.current = true; return; }
-    if (wasOrbiting.current) {
-      // The player just finished moving the camera: if the zoom changed by hand, remember it.
-      wasOrbiting.current = false;
-      if (Math.abs(dist - autoDist.current) > 0.4) userDist.current = dist;
-      autoDist.current = dist;
+      camera.position.set(...CAMERA_HOME);
+      tgt.set(...CAMERA_TARGET);
+      userScale.current = 1;
+      started.current = false;
       return;
     }
 
-    let H = 0;
+    const boxes: FrameBox[] = [];
     for (const id of Array.from(bodies.keys())) {
       const k = kinds.get(id);
       const p = k ? poseOf(id) : null;
       if (!k || !p) continue;
-      const top = p.t.y + worldHalf(k, p.q)[1];
-      if (Number.isFinite(top)) H = Math.max(H, top);
+      const h = worldHalf(k, p.q);
+      if (Number.isFinite(p.t.x + p.t.y + p.t.z + h[0] + h[1] + h[2])) boxes.push({ x: p.t.x, y: p.t.y, z: p.t.z, hx: h[0], hy: h[1], hz: h[2] });
     }
     const d = drag.current;
-    if (d?.last) H = Math.max(H, d.last.y + BLOCK_SCALE / 2); // the carried block's own top
+    const dk = d?.last ? kinds.get(d.id) : undefined;
+    if (d?.last && dk) {
+      const h = halfExtents(dk); // where the carried block is being taken
+      boxes.push({ x: d.last.x, y: d.last.y, z: d.last.z, hx: h[0], hy: h[1], hz: h[2] });
+    }
+    const fr = frameFor(boxes, size.width / Math.max(1, size.height), (camera as THREE.PerspectiveCamera).fov);
+    const dist = camera.position.distanceTo(tgt);
 
-    const wantY = Math.max(1.5, H * 0.45);
-    const need = (H + 2) * 2.0; // keeps a tower of height H inside the part of the screen the UI leaves free
-    const wantDist = Math.min(ctl.maxDistance ?? 48, Math.max(userDist.current, need));
-    const k = 1 - Math.exp(-2.5 * Math.min(delta, 0.1));
+    if (orbiting.current) { wasOrbiting.current = true; return; }
+    if (wasOrbiting.current) {
+      // The player just moved the camera: a changed zoom is kept as a ratio to the framing's own choice.
+      wasOrbiting.current = false;
+      if (lastFit.current > 0) userScale.current = Math.min(2.5, Math.max(0.4, dist / lastFit.current));
+      return;
+    }
+    lastFit.current = fr.distance;
+    const wantDist = Math.min(ctl.maxDistance ?? FRAME_DIST_MAX, Math.max(ctl.minDistance ?? 5, fr.distance * userScale.current));
 
-    const dy = (wantY - tgt.y) * k;
-    tgt.y += dy;
-    camera.position.y += dy;
-    const nd = dist + (wantDist - dist) * k;
-    camera.position.sub(tgt).setLength(nd).add(tgt);
-    autoDist.current = nd;
+    // First frame: start framed, no glide. Afterwards ease: quicker when zooming out (something grows), slower in.
+    const first = !started.current;
+    const k = first ? 1 : 1 - Math.exp(-(wantDist > dist ? 2.2 : 1.1) * Math.min(delta, 0.1));
+    started.current = true;
+    const dx = (fr.cx - tgt.x) * k, dy = (fr.cy - tgt.y) * k, dz = (fr.cz - tgt.z) * k;
+    tgt.x += dx; tgt.y += dy; tgt.z += dz;
+    camera.position.x += dx; camera.position.y += dy; camera.position.z += dz;
+    if (first || Math.abs(wantDist - dist) > 0.04 * dist) {
+      camera.position.sub(tgt).setLength(dist + (wantDist - dist) * k).add(tgt);
+    }
   });
+  return null;
+}
+
+/** Stiffer contact solving: a tall stack needs more solver iterations than the engine's default. */
+function SolverTuning() {
+  const { world } = useRapier();
+  useEffect(() => {
+    try {
+      const ip = (world as unknown as { integrationParameters?: { numSolverIterations?: number } }).integrationParameters;
+      if (ip) ip.numSolverIterations = 8;
+    } catch {
+      /* an engine without this setting keeps its default */
+    }
+  }, [world]);
   return null;
 }
 
@@ -356,12 +402,28 @@ export default function Playroom() {
     return x > r.left - pad && x < r.right + pad && y > r.top - pad && y < r.bottom + pad;
   }, []);
 
+  /** Where new blocks should appear: around the middle of what the camera shows, and only where it is comfortably on screen. */
+  const spawnView = (): SpawnOptions => {
+    const cam = probe.current?.camera;
+    if (!cam) return {};
+    cam.updateMatrixWorld();
+    const v = new THREE.Vector3();
+    const accept = (x: number, z: number) => {
+      v.set(x, RUG_H + 1, z).project(cam);
+      return v.z > -1 && v.z < 1 && Math.abs(v.x) < 0.6 && v.y > -0.3 && v.y < 0.72; // clear of the screen edge and the tray
+    };
+    const rc = new THREE.Raycaster();
+    rc.setFromCamera(new THREE.Vector2(0, 0.1), cam);
+    const hit = rc.ray.intersectPlane(new THREE.Plane(UP, -RUG_H), new THREE.Vector3());
+    return hit ? { anchor: { x: hit.x, z: hit.z }, accept } : { accept };
+  };
+
   const spawn = (kind: ShapeKind) => {
     unlockAudio();
     const color = TOY_COLORS[colorIdx % TOY_COLORS.length]!;
     setColorIdx((i) => i + 1);
     const id = nextId.current++;
-    const pos = pickSpawn(kind, snapshot());
+    const pos = pickSpawn(kind, snapshot(), Math.random, spawnView());
     setBlocks((b) => [...b, { id, kind, color, spawn: pos }]);
     sfx.spawn();
   };
@@ -394,24 +456,41 @@ export default function Playroom() {
         body.setLinvel(v, true);
         body.setAngvel({ x: v.z * 0.3, y: 0, z: -v.x * 0.3 }, true);
       } else {
-        // Gentle place. The carried block does not collide with the others, so if it is still on its way
-        // (overlapping something) put it on its computed spot first: no pop-out when the physics wakes up.
+        // Gentle place: the block is put down exactly (on a tower: at the spot where its centre of mass is over the
+        // support, upright, just touching it). It is not dropped, so there is no impact that could shake the tower.
         const k = kinds.get(d.id);
         const t0 = body.translation();
-        const rest = snapshot(d.id).filter((o) => !d.load.includes(o.id));
-        if (k && d.last && overlapsOther(k, t0.x, t0.y, t0.z, d.last.yaw, rest)) {
-          const dx = d.last.x - t0.x, dy = d.last.y - t0.y, dz = d.last.z - t0.z;
-          body.setTranslation({ x: d.last.x, y: d.last.y, z: d.last.z }, true);
-          for (const id of d.load) {
-            const pb = bodies.get(id);
-            if (!pb) continue;
-            const pt = pb.translation();
-            pb.setTranslation({ x: pt.x + dx, y: pt.y + dy, z: pt.z + dz }, true);
+        const others = snapshot(d.id).filter((o) => !d.load.includes(o.id));
+        const onSupport = !!d.last && d.last.top > RUG_H + 0.01;
+        if (k && d.last) {
+          const [, hyK] = halfExtents(k);
+          const px = d.last.rest?.x ?? d.last.x, pz = d.last.rest?.z ?? d.last.z;
+          const py = d.last.top + hyK + REST_GAP;
+          const near = Math.hypot(px - t0.x, py - t0.y, pz - t0.z) < BLOCK_SCALE * 0.75;
+          let target: { x: number; y: number; z: number } | null = null;
+          let level = false;
+          if (near && !overlapsOther(k, px, py, pz, d.last.yaw, others)) {
+            target = { x: px, y: py, z: pz };
+            level = d.load.length === 0;
+          } else if (overlapsOther(k, t0.x, t0.y, t0.z, d.last.yaw, others)) {
+            // still on its way and overlapping something: its computed spot, so nothing pops out
+            target = { x: d.last.x, y: d.last.y, z: d.last.z };
+          }
+          if (target) {
+            const dx = target.x - t0.x, dy = target.y - t0.y, dz = target.z - t0.z;
+            body.setTranslation(target, true);
+            if (level) body.setRotation({ x: 0, y: Math.sin(d.last.yaw / 2), z: 0, w: Math.cos(d.last.yaw / 2) }, true);
+            for (const id of d.load) {
+              const pb = bodies.get(id);
+              if (!pb) continue;
+              const pt = pb.translation();
+              pb.setTranslation({ x: pt.x + dx, y: pt.y + dy, z: pt.z + dz }, true);
+            }
           }
         }
-        // Magnet-locked: exact, no leftover motion. Otherwise a natural little slide (the passengers move with it,
-        // so the stack does not topple), then it settles under friction.
-        const keep = d.last?.snapped ? 0 : RELEASE_KEEP;
+        // On a tower or magnet-locked: no leftover motion. On the floor otherwise: a natural little slide (the
+        // passengers move with it, so the stack does not topple), then it settles under friction.
+        const keep = d.last?.snapped || onSupport ? 0 : RELEASE_KEEP;
         for (const id of [d.id, ...d.load]) {
           const b = bodies.get(id);
           if (!b) continue;
@@ -427,7 +506,7 @@ export default function Playroom() {
 
   const turnHeld = useCallback(() => {
     const d = drag.current;
-    if (!d) return;
+    if (!d || d.load.length) return; // turning the base would twist the tower on it
     d.yaw += HALF_PI;
     sfx.click();
   }, []);
@@ -477,7 +556,7 @@ export default function Playroom() {
       const p = bodies.get(pid);
       if (p) setPassenger(p, true);
     }
-    drag.current = { id, pointerId: e.pointerId, x: e.clientX, y: e.clientY, offX: 0, offZ: 0, started: false, x0: e.clientX, y0: e.clientY, last: null, vx: 0, vz: 0, wasSnapped: false, sticky: null, yaw: 0, load, samples: [] };
+    drag.current = { id, pointerId: e.pointerId, x: e.clientX, y: e.clientY, offX: 0, offZ: 0, started: false, x0: e.clientX, y0: e.clientY, last: null, cmd: { x: 0, y: 0, z: 0 }, vx: 0, vz: 0, wasSnapped: false, sticky: null, yaw: 0, load, samples: [] };
     setActiveId(id);
     sfx.pick();
   }, [cancelDrag]);
@@ -595,7 +674,7 @@ export default function Playroom() {
       <Canvas
         shadows
         dpr={[1, 2]}
-        camera={{ position: [14, 14, 22], fov: 45 }}
+        camera={{ position: CAMERA_HOME, fov: CAMERA_FOV }}
         onCreated={() => setTimeout(() => setReady(true), 300)}
         style={{ position: "absolute", inset: 0 }}
       >
@@ -620,6 +699,7 @@ export default function Playroom() {
         </Environment>
         <Suspense fallback={null}>
           <Physics gravity={[0, -GRAVITY, 0]} timeStep={1 / 120}>
+            <SolverTuning />
             <Room />
             {blocks.map((b) => (
               <Block key={b.id} data={b} onGrab={onGrab} active={activeId === b.id} />
@@ -635,7 +715,7 @@ export default function Playroom() {
           ref={controls}
           onStart={() => { orbiting.current = true; }}
           onEnd={() => { orbiting.current = false; }}
-          target={[0, 1.5, 0]}
+          target={CAMERA_TARGET}
           enablePan={false}
           enableRotate
           enableZoom
@@ -643,7 +723,8 @@ export default function Playroom() {
           zoomSpeed={0.8}
           minDistance={5}
           maxDistance={48}
-          maxPolarAngle={Math.PI / 2.15}
+          minPolarAngle={CAMERA_MIN_POLAR}
+          maxPolarAngle={CAMERA_MAX_POLAR}
           mouseButtons={{ LEFT: undefined as any, MIDDLE: THREE.MOUSE.DOLLY, RIGHT: THREE.MOUSE.ROTATE }}
           touches={{ ONE: undefined as any, TWO: THREE.TOUCH.DOLLY_ROTATE }}
         />
