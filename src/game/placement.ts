@@ -228,7 +228,7 @@ export interface Pick { id: number; x: number; z: number; top: number }
  */
 export function pickBlock(
   ox: number, oy: number, oz: number, dx: number, dy: number, dz: number,
-  others: Other[], heldY: number, maxT = Infinity,
+  others: Other[], heldY: number, maxT = Infinity, margin = 0,
 ): Pick | null {
   if (dy >= -1e-6) return null; // the view ray always points down at the playroom
   let best: { o: Other; t: number; ax: number; ay: number; az: number } | null = null;
@@ -243,7 +243,9 @@ export function pickBlock(
       t0 = Math.max(t0, a); t1 = Math.min(t1, b);
       return t0 <= t1;
     };
-    if (!slab(ox, dx, o.x, ax) || !slab(oy, dy, o.y, ay) || !slab(oz, dz, o.z, az)) continue;
+    // `margin`: generous aim. A tall tower is a narrow target seen from afar, and the finger hides it: a ray that
+    // passes just beside it still counts as pointing at it (the hit point is clamped onto the real face below).
+    if (!slab(ox, dx, o.x, ax + margin) || !slab(oy, dy, o.y, ay) || !slab(oz, dz, o.z, az + margin)) continue;
     if (t0 > maxT) continue; // only blocks the finger sees BEFORE the floor point it would otherwise aim at
     if (!best || t0 < best.t) best = { o, t: t0, ax, ay, az };
   }

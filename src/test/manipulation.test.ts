@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { supportedAbove, gestureVelocity, throwVelocity, carryVelocity, leanFor, limitAccel, loadAccel } from '@/game/manipulation';
-import { BLOCK_SCALE, GRAVITY, PLAY_AREA, GROUP_BLOCK, GROUP_HELD, GROUP_PASSENGER, GROUP_GROUND, CARRY_MAX, FLICK_SPEED, THROW_MIN, TILT_MAX } from '@/game/shapes';
+import { BLOCK_SCALE, GRAVITY, PLAY_AREA, GROUP_BLOCK, GROUP_HELD, GROUP_PASSENGER, GROUP_GROUND, CARRY_MAX, CARRY_MAX_Y, FLICK_SPEED, THROW_MIN, TILT_MAX } from '@/game/shapes';
 import type { Other } from '@/game/placement';
 
 // Rapier's rule: two colliders touch when each one's membership meets the other's filter.
@@ -24,8 +24,15 @@ describe('physical manipulation', () => {
   });
   it('the carried block follows the finger promptly, and its speed is capped', () => {
     expect(carryVelocity({ x: 0.1, y: 0, z: 0 }).x).toBeCloseTo(1.4);
-    const far = carryVelocity({ x: 5, y: 5, z: 0 });
-    expect(Math.hypot(far.x, far.y, far.z)).toBeCloseTo(CARRY_MAX);
+    const far = carryVelocity({ x: 5, y: 0, z: 5 });
+    expect(Math.hypot(far.x, far.z)).toBeCloseTo(CARRY_MAX);
+  });
+
+  it('climbs fast: the vertical speed has its own, higher cap', () => {
+    const up = carryVelocity({ x: 0, y: 12, z: 0 });
+    expect(up.y).toBeCloseTo(CARRY_MAX_Y);
+    expect(CARRY_MAX_Y).toBeGreaterThan(CARRY_MAX);
+    expect(carryVelocity({ x: 5, y: 0, z: 0 }).y).toBe(0);
   });
   it('a carried block leans into the motion, capped, and barely at all right above a support', () => {
     const l = leanFor({ x: 4, y: 0, z: 0 });

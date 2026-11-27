@@ -6,7 +6,7 @@ import { Physics, useRapier } from "@react-three/rapier";
 import { Trash2, RotateCw } from "lucide-react";
 import {
   BLOCK_SCALE, SELECTABLE_SHAPES, TOY_COLORS, shapeDef, halfExtents, type BlockData, type ShapeKind,
-  GRAVITY, ROT_GAIN, ROT_MAX, THROW_MIN, FLICK_SPEED,
+  GRAVITY, ROT_GAIN, ROT_MAX, THROW_MIN, FLICK_SPEED, GESTURE_REF_DIST,
   RUG_H, DRAG_LIFT, PLAY_AREA, RELEASE_KEEP, REST_GAP,
   CAMERA_HOME, CAMERA_TARGET, CAMERA_FOV, CAMERA_MAX_POLAR, CAMERA_MIN_POLAR, FRAME_DIST_MAX,
 } from "@/game/shapes";
@@ -35,6 +35,8 @@ interface DragState {
   last: { x: number; y: number; z: number; yaw: number; top: number; snapped: boolean; rest: { x: number; z: number } | null } | null;
   /** Commanded carry velocity (rate-limited while a stack rides on the block). */
   cmd: { x: number; y: number; z: number };
+  /** Converts the finger speed to what it would be at the default camera distance (zoomed out, a finger is not faster). */
+  gscale: number;
   /** Smoothed carry velocity (for the lean) and the previous magnet state (for the haptic tick). */
   vx: number;
   vz: number;
@@ -86,6 +88,8 @@ const MARK_SNAP = new THREE.Color("#7dffb0");
 function DragController({ drag, onAbort }: { drag: React.MutableRefObject<DragState | null>; onAbort: () => void }) {
   const { camera, gl } = useThree();
   const plane = useMemo(() => new THREE.Plane(new THREE.Vector3(0, 1, 0), 0), []);
+  const planeS = useMemo(() => new THREE.Plane(new THREE.Vector3(0, 1, 0), 0), []);
+  const tmpS = useMemo(() => new THREE.Vector3(), []);
   const rectRef = useRef<THREE.Mesh>(null);
   const roundRef = useRef<THREE.Mesh>(null);
   const markMat = useMemo(
@@ -120,15 +124,21 @@ function DragController({ drag, onAbort }: { drag: React.MutableRefObject<DragSt
     // front of the floor point.
     const moved = Math.hypot(d.x - d.x0, d.y - d.y0) > 14;
     const now = performance.now();
-    if (hit) {
-      d.samples.push({ time: now, x: hit.x, z: hit.z });
-      d.samples = d.samples.filter((s) => now - s.time <= 160);
+    // The finger's speed is judged where the block actually is (its own height) and at the default camera distance.
+    // On the floor plane a finger at the top of a tall tower looks several times faster than it is, which used to
+    // switch the lift assistant off (a "flick") exactly when a high block was being placed.
+    planeS.constant = -(d.last ? d.last.y : carryLevel);
+    const sp = ray.ray.intersectPlane(planeS, tmpS);
+    if (sp) {
+      d.samples.push({ time: now, x: sp.x, z: sp.z });
+      d.samples = d.samples.filter((m) => now - m.time <= 160);
+      d.gscale = GESTURE_REF_DIST / Math.max(1, o.distanceTo(sp));
     }
     const gesture = gestureVelocity(d.samples, now);
     // A flick means a throw is coming: the assistant steps aside so the block can be thrown AT a tower.
-    const flick = Math.hypot(gesture.x, gesture.z) >= FLICK_SPEED;
+    const flick = Math.hypot(gesture.x, gesture.z) * d.gscale >= FLICK_SPEED;
     const pick = moved && !flick
-      ? pickBlock(o.x, o.y, o.z, dir.x, dir.y, dir.z, others, t.y, hit ? hit.distanceTo(o) : Infinity)
+      ? pickBlock(o.x, o.y, o.z, dir.x, dir.y, dir.z, others, t.y, hit ? hit.distanceTo(o) : Infinity, BLOCK_SCALE * 0.3)
       : null;
     if (!hit && !pick) return hide();
 
@@ -280,7 +290,7 @@ function Keeper() {
 }
 
 /**
- * Smart camera: frames the whole castle and whatever is being carried. It looks at the middle of the blocks and
+ * Smart camera: frames the whole castle (with room above it for the next block). It looks at the middle of the blocks and
  * picks the distance from their size and spread (`frameFor`): it zooms IN while there are only a few blocks (more
  * so on a wide screen), and OUT as the tower gets tall or the blocks spread out. It never fights the player: it
  * stands still while they orbit or zoom, and a manual zoom is kept as a ratio to what the framing would choose.
@@ -317,14 +327,10 @@ function AutoFrame({ controls, drag, orbiting }: {
       const h = worldHalf(k, p.q);
       if (Number.isFinite(p.t.x + p.t.y + p.t.z + h[0] + h[1] + h[2])) boxes.push({ x: p.t.x, y: p.t.y, z: p.t.z, hx: h[0], hy: h[1], hz: h[2] });
     }
-    const d = drag.current;
-    const dk = d?.last ? kinds.get(d.id) : undefined;
-    if (d?.last && dk) {
-      const h = halfExtents(dk); // where the carried block is being taken
-      boxes.push({ x: d.last.x, y: d.last.y, z: d.last.z, hx: h[0], hy: h[1], hz: h[2] });
-    }
-    const fr = frameFor(boxes, size.width / Math.max(1, size.height), (camera as THREE.PerspectiveCamera).fov);
     const dist = camera.position.distanceTo(tgt);
+    // The camera's own elevation: the framing fits the castle's height as seen from there.
+    const pitch = Math.asin(Math.min(1, Math.max(0.2, (camera.position.y - tgt.y) / Math.max(1e-6, dist))));
+    const fr = frameFor(boxes, size.width / Math.max(1, size.height), (camera as THREE.PerspectiveCamera).fov, pitch);
 
     if (orbiting.current) { wasOrbiting.current = true; return; }
     if (wasOrbiting.current) {
@@ -334,6 +340,9 @@ function AutoFrame({ controls, drag, orbiting }: {
       return;
     }
     lastFit.current = fr.distance;
+    // Never move the view while a block is being carried: the scene would slide under the finger (the framing
+    // already leaves room above the tower for the next block). It settles once the block is put down.
+    if (drag.current) return;
     const wantDist = Math.min(ctl.maxDistance ?? FRAME_DIST_MAX, Math.max(ctl.minDistance ?? 5, fr.distance * userScale.current));
 
     // First frame: start framed, no glide. Afterwards ease: quicker when zooming out (something grows), slower in.
@@ -451,7 +460,7 @@ export default function Playroom() {
     if (body) {
       endCarry(d);
       // Over a tower only a hard flick throws; on the floor a smaller gesture does.
-      const v = throwVelocity(gestureVelocity(d.samples, performance.now()), d.sticky !== null ? FLICK_SPEED : THROW_MIN);
+      const v = throwVelocity(gestureVelocity(d.samples, performance.now()), (d.sticky !== null ? FLICK_SPEED : THROW_MIN) / Math.max(0.2, d.gscale));
       if (v) {
         body.setLinvel(v, true);
         body.setAngvel({ x: v.z * 0.3, y: 0, z: -v.x * 0.3 }, true);
@@ -556,7 +565,7 @@ export default function Playroom() {
       const p = bodies.get(pid);
       if (p) setPassenger(p, true);
     }
-    drag.current = { id, pointerId: e.pointerId, x: e.clientX, y: e.clientY, offX: 0, offZ: 0, started: false, x0: e.clientX, y0: e.clientY, last: null, cmd: { x: 0, y: 0, z: 0 }, vx: 0, vz: 0, wasSnapped: false, sticky: null, yaw: 0, load, samples: [] };
+    drag.current = { id, pointerId: e.pointerId, x: e.clientX, y: e.clientY, offX: 0, offZ: 0, started: false, x0: e.clientX, y0: e.clientY, last: null, cmd: { x: 0, y: 0, z: 0 }, gscale: 1, vx: 0, vz: 0, wasSnapped: false, sticky: null, yaw: 0, load, samples: [] };
     setActiveId(id);
     sfx.pick();
   }, [cancelDrag]);

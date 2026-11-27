@@ -104,6 +104,14 @@ describe("pickBlock (what the finger points at)", () => {
   it("ignores blocks that sit on top of the carried one", () => {
     expect(pickBlock(0, 5, 4, 0, -d, -d, tower, RUG_H + 0.5 * S)?.id).toBe(1);
   });
+  it("a ray passing just beside a tall tower still counts as pointing at it, with a margin", () => {
+    const near = pickBlock(0.5 * S + 0.2 * S, 5, 4, 0, -d, -d, tower, 9); // just outside the face
+    expect(near).toBeNull();
+    const generous = pickBlock(0.5 * S + 0.2 * S, 5, 4, 0, -d, -d, tower, 9, Infinity, 0.3 * S);
+    expect(generous?.id).toBe(2);
+    expect(Math.abs(generous!.x)).toBeLessThanOrEqual(0.5 * S + 1e-9); // the hit point is still on the real face
+  });
+
   it("ignores blocks farther than maxT (behind the aimed floor point)", () => {
     expect(pickBlock(0, 5, 4, 0, -d, -d, tower, 9, 1)).toBeNull();
   });

@@ -16,9 +16,9 @@ describe('camera framing', () => {
     expect(frameFor(blocks, 0.46, 45).distance).toBeGreaterThan(frameFor(blocks, 1.8, 45).distance);
   });
 
-  it('zooms out as the tower gets taller and as the blocks spread out', () => {
+  it('zooms out as the blocks spread out, and for a really tall tower', () => {
     const small = frameFor([box(0, 1, 0)], 1, 45).distance;
-    const tall = frameFor([box(0, 1, 0), box(0, 8, 0), box(0, 16, 0)], 1, 45).distance;
+    const tall = frameFor([box(0, 1, 0), box(0, 14, 0), box(0, 30, 0)], 1, 45).distance;
     const wide = frameFor([box(-8, 1, 0), box(8, 1, 0)], 1, 45).distance;
     expect(tall).toBeGreaterThan(small);
     expect(wide).toBeGreaterThan(small);

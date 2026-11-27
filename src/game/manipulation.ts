@@ -1,4 +1,4 @@
-import { CARRY_GAIN, CARRY_MAX, GRAVITY, LOAD_ACCEL, THROW_MIN, THROW_MAX, TILT_MAX, TILT_PER_SPEED } from './shapes';
+import { CARRY_GAIN, CARRY_MAX, CARRY_MAX_Y, GRAVITY, LOAD_ACCEL, THROW_MIN, THROW_MAX, TILT_MAX, TILT_PER_SPEED } from './shapes';
 import { worldHalf, type Other } from './placement';
 
 export interface Velocity { x: number; y: number; z: number }
@@ -53,10 +53,12 @@ export function throwVelocity(v: Velocity, minSpeed = THROW_MIN): Velocity | nul
  * sudden jerk leaves it behind.
  */
 export function carryVelocity(error: Velocity): Velocity {
-  const x = error.x * CARRY_GAIN, y = error.y * CARRY_GAIN, z = error.z * CARRY_GAIN;
-  const speed = Math.hypot(x, y, z);
-  const k = speed > CARRY_MAX ? CARRY_MAX / speed : 1;
-  return { x: x * k, y: y * k, z: z * k };
+  // Horizontal and vertical are capped separately: a block must climb a tall tower quickly, but sweep sideways gently.
+  const x = error.x * CARRY_GAIN, z = error.z * CARRY_GAIN;
+  const y = Math.max(-CARRY_MAX_Y, Math.min(CARRY_MAX_Y, error.y * CARRY_GAIN));
+  const h = Math.hypot(x, z);
+  const k = h > CARRY_MAX ? CARRY_MAX / h : 1;
+  return { x: x * k, y, z: z * k };
 }
 
 /**

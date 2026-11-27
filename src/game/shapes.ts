@@ -89,7 +89,9 @@ export const SPAWN_RADIUS = 0.4;
 export const DRAG_LIFT = 0.3; // carried blocks float this far above the rug
 export const HOVER_GAP = 0.06; // carried blocks float this far above a tower top (tiny, soft drop)
 export const CARRY_GAIN = 14; // 1/s: how eagerly a carried block follows the finger
-export const CARRY_MAX = 14; // u/s: cap, so a carried block cannot fire the others away
+export const CARRY_MAX = 14; // u/s: horizontal cap
+/** Vertical cap: much higher, so a block climbs a tall tower without lagging far behind the finger. */
+export const CARRY_MAX_Y = 28;
 export const ROT_GAIN = 14; // 1/s: how fast a carried block turns to its target yaw
 export const ROT_MAX = 14; // rad/s
 export const THROW_MIN = 3; // gesture speed (u/s) at release on the floor: slower = gentle place, faster = throw
@@ -111,9 +113,13 @@ export const CAMERA_TARGET: [number, number, number] = [0, 1.5, 0];
 export const CAMERA_FOV = 45;
 export const CAMERA_MAX_POLAR = 1.2; // rad from straight down: never a near-horizontal view (the finger ray gets useless)
 export const CAMERA_MIN_POLAR = 0.3;
-/** Framing: the view always covers a ball of at least this radius around the blocks, plus the padding. */
-export const FRAME_MIN_RADIUS = 5.5;
+/** Framing: the view always covers at least this wide a stretch of rug (a few blocks are seen big), plus the padding. */
+export const FRAME_MIN_SPAN = 7;
 export const FRAME_PAD = 1.5;
+/** The view always leaves this much room above the tower, in blocks: the next block goes there. */
+export const FRAME_HEADROOM = 1.3;
+/** Finger speed is judged at this camera distance (the default view): zoomed out, the same finger speed is not a "flick". */
+export const GESTURE_REF_DIST = 28;
 export const FRAME_DIST_MIN = 10;
 export const FRAME_DIST_MAX = 48;
 
